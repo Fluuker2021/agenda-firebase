@@ -113,8 +113,6 @@ auth.onAuthStateChanged(async (u) => {
   $("modalDia").classList.remove("visible");
   $("modalEliminarSerie").classList.remove("visible");
   $("modalDiaLista").innerHTML = "";
-  $("panelNotif").innerHTML = "";
-  $("panelNotif").classList.remove("visible");
   $("menuLista").classList.remove("visible");
   $("btnMenu").classList.remove("abierto");
   if (!u) {
@@ -150,7 +148,8 @@ auth.onAuthStateChanged(async (u) => {
   }
   $("loginView").hidden = true;
   $("appView").hidden = false;
-  $("btnAvatar").textContent = iniciales(miPerfil.nombre);
+  $("avatarUsuario").textContent = iniciales(miPerfil.nombre);
+  $("avatarUsuario").title = `${miPerfil.nombre} · ${miPerfil.email || ""}`;
   await cargarUsuarios();
   construirNav();
   iniciarNotificaciones();
@@ -209,7 +208,6 @@ document.addEventListener("click", (e) => {
   if (!$("menuNav").contains(e.target)) cerrarMenu();
 });
 function irA(v) { vistaActual = v; marcarTabActiva(); renderizarVista(); }
-$("btnInicio").addEventListener("click", () => irA("hoy"));
 
 function renderizarVista() {
   apagarTodosMenos(null);
@@ -307,13 +305,42 @@ function agruparPorFecha(tareas) {
   return { vencidas: ordenar(vencidas), deHoy: ordenar(deHoy), proximas: ordenar(proximas), futuras: ordenar(futuras), sinFecha: ordenar(sinFecha) };
 }
 
+// ids de secciones que la persona cerró a mano — se recuerda mientras dura
+// la sesión (sobrevive a los refrescos en tiempo real de onSnapshot, que si
+// no, las volverían a abrir solas en cada cambio).
+const seccionesColapsadas = new Set();
+
 function seccionHTML(id, titulo, emoji, lista, mostrarResponsable) {
   if (lista.length === 0) return "";
+  const cerrada = seccionesColapsadas.has(id);
   return `
   <div class="seccion">
-    <div class="seccion-titulo">${emoji} ${titulo} <span class="contador">(${lista.length})</span></div>
-    <div id="${id}">${lista.map((t) => tarjetaTareaHTML(t, { mostrarResponsable })).join("")}</div>
+    <button type="button" class="seccion-titulo" data-toggle="${id}">
+      <span class="seccion-flecha${cerrada ? " cerrada" : ""}">▾</span>
+      ${emoji} ${titulo} <span class="contador">(${lista.length})</span>
+    </button>
+    <div id="${id}" class="seccion-lista${cerrada ? " oculta" : ""}">${lista.map((t) => tarjetaTareaHTML(t, { mostrarResponsable })).join("")}</div>
   </div>`;
+}
+
+// delega el clic en los encabezados de sección para abrir/cerrar cada grupo
+function conectarSecciones(contenedorEl) {
+  contenedorEl.querySelectorAll("[data-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.toggle;
+      const lista = document.getElementById(id);
+      const flecha = btn.querySelector(".seccion-flecha");
+      if (seccionesColapsadas.has(id)) {
+        seccionesColapsadas.delete(id);
+        lista.classList.remove("oculta");
+        flecha.classList.remove("cerrada");
+      } else {
+        seccionesColapsadas.add(id);
+        lista.classList.add("oculta");
+        flecha.classList.add("cerrada");
+      }
+    });
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -340,6 +367,7 @@ function vistaHoy() {
     ].join("");
     $("hoyListas").innerHTML = html || '<p class="vacio">No tienes tareas pendientes. 🎉</p>';
     conectarAccionesTareas($("hoyListas"), porId);
+    conectarSecciones($("hoyListas"));
   });
 }
 
@@ -471,33 +499,11 @@ $("btnTodaSerie").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------
-// Notificaciones: campanita en la app (siempre) + push real por FCM
-// (cuando el navegador lo soporta y la persona da permiso).
+// Notificaciones push reales (como WhatsApp), por FCM. Si el navegador no
+// lo soporta o la persona no da permiso, no pasa nada grave: simplemente no
+// llegan avisos push, pero el resto de la app funciona igual.
 // ---------------------------------------------------------------------
 async function iniciarNotificaciones() {
-  const q = query(collection(db, "notificaciones"), where("paraUid", "==", miUid), orderBy("creadoEn", "desc"), limit(25));
-  unsubs.notif = onSnapshot(q, (snap) => {
-    const items = [];
-    snap.forEach((d) => items.push({ id: d.id, ...d.data() }));
-    const hayNuevas = items.some((n) => !n.leida);
-    $("btnCampana").classList.toggle("hay-nuevas", hayNuevas);
-    $("panelNotif").innerHTML = items.length
-      ? items.map((n) => `
-        <div class="notif-item ${n.leida ? "" : "no-leida"}" data-id="${n.id}">
-          <b>${esc(n.titulo)}</b>${esc(n.cuerpo || "")}
-          <br><small>${n.creadoEn?.toDate ? n.creadoEn.toDate().toLocaleString("es-PE") : "justo ahora"}</small>
-        </div>`).join("")
-      : '<div class="notif-item">Sin notificaciones por ahora.</div>';
-    $("panelNotif").querySelectorAll(".notif-item[data-id]").forEach((el) => {
-      el.addEventListener("click", () => {
-        updateDoc(doc(db, "notificaciones", el.dataset.id), { leida: true }).catch(() => {});
-      });
-    });
-  }, () => { /* si todavía no existe el índice o similar, la campanita simplemente no se llena */ });
-
-  // Lo de abajo es el push real (como WhatsApp). Si el navegador no lo
-  // soporta o la persona no da permiso, la app sigue funcionando igual
-  // con la campanita de arriba.
   try {
     if (!(await mensajeriaSoportada())) return;
     if (!VAPID_KEY || VAPID_KEY === "PEGAR_AQUI") return; // todavía no configurado
@@ -512,15 +518,8 @@ async function iniciarNotificaciones() {
     onMessage(messaging, (payload) => {
       flash(payload.notification?.title || "Tienes una notificación nueva.");
     });
-  } catch (e) { /* sin push real; no es grave, la campanita ya funciona */ }
+  } catch (e) { /* sin push real; no es grave */ }
 }
-
-$("btnCampana").addEventListener("click", () => $("panelNotif").classList.toggle("visible"));
-document.addEventListener("click", (e) => {
-  if (!$("panelNotif").contains(e.target) && !$("btnCampana").contains(e.target)) {
-    $("panelNotif").classList.remove("visible");
-  }
-});
 
 // ---------------------------------------------------------------------
 // Vista "Todas las tareas" — admin/owner, con filtros
@@ -567,6 +566,7 @@ function vistaTodas() {
       ].join("");
       $("todasListas").innerHTML = html || '<p class="vacio">No hay tareas con ese filtro.</p>';
       conectarAccionesTareas($("todasListas"), porId);
+      conectarSecciones($("todasListas"));
     };
     repintar();
     $("filtroResponsable").onchange = repintar;

@@ -45,10 +45,9 @@ h2{font-size:1.05rem;margin:0 0 10px}
 
 /* ---------- shell ---------- */
 .topbar{display:flex;align-items:center;justify-content:space-between;background:var(--tarjeta);border-bottom:1px solid var(--borde);padding:10px 16px;gap:10px;position:sticky;top:0;z-index:100}
-.marca{display:flex;align-items:center;gap:8px;font-weight:700;border:none;background:none;color:var(--texto);padding:0}
-.marca img{width:28px;height:28px;border-radius:7px}
 .menu-nav{position:relative}
-.boton-menu{display:flex;align-items:center;gap:6px;border:1px solid var(--borde);background:var(--tarjeta);color:var(--texto);padding:8px 12px;border-radius:8px;font-size:.88rem;font-weight:600}
+.boton-menu{display:flex;align-items:center;gap:8px;border:1px solid var(--borde);background:var(--tarjeta);color:var(--texto);padding:7px 12px 7px 7px;border-radius:9px;font-size:.88rem;font-weight:600}
+.menu-icono-app{width:26px;height:26px;border-radius:7px;flex-shrink:0}
 .boton-menu .flecha{font-size:.7rem;color:var(--texto-suave);transition:transform .15s}
 .boton-menu.abierto .flecha{transform:rotate(180deg)}
 .menu-lista{position:absolute;top:calc(100% + 6px);left:0;min-width:210px;background:var(--tarjeta);border:1px solid var(--borde);border-radius:10px;box-shadow:var(--sombra);z-index:600;overflow:hidden;display:none}
@@ -58,10 +57,9 @@ h2{font-size:1.05rem;margin:0 0 10px}
 .menu-lista button:hover{background:var(--fondo)}
 .menu-lista button.activa{color:var(--azul);background:var(--azul-suave)}
 .topbar-der{display:flex;align-items:center;gap:8px;flex-shrink:0}
-.icono-campana{position:relative;width:36px;height:36px;border-radius:8px;border:1px solid var(--borde);background:var(--tarjeta);font-size:1.1rem;display:flex;align-items:center;justify-content:center}
-.icono-campana .punto{position:absolute;top:4px;right:4px;width:9px;height:9px;border-radius:50%;background:var(--rojo);display:none}
-.icono-campana.hay-nuevas .punto{display:block}
 .avatar{width:34px;height:34px;border-radius:50%;background:var(--azul);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem;border:none}
+.icono-salir{width:36px;height:36px;border-radius:8px;border:1px solid var(--borde);background:var(--tarjeta);color:var(--texto-suave);display:flex;align-items:center;justify-content:center}
+.icono-salir:hover{color:var(--rojo);border-color:var(--rojo);background:var(--rojo-suave)}
 
 .contenedor{max-width:1000px;margin:0 auto;padding:20px 16px 90px}
 .subtitulo{color:var(--texto-suave);margin:0 0 20px}
@@ -71,8 +69,11 @@ h2{font-size:1.05rem;margin:0 0 10px}
 .chip strong{color:var(--texto);font-size:1.05rem}
 
 .seccion{margin-bottom:18px}
-.seccion-titulo{display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:8px;font-size:.95rem}
+.seccion-titulo{display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:8px;font-size:.95rem;width:100%;border:none;background:none;color:inherit;padding:4px 0;text-align:left}
 .seccion-titulo .contador{font-weight:400;color:var(--texto-suave);font-size:.8rem}
+.seccion-flecha{display:inline-block;font-size:.8rem;color:var(--texto-suave);transition:transform .15s}
+.seccion-flecha.cerrada{transform:rotate(-90deg)}
+.seccion-lista.oculta{display:none}
 
 .tarjeta-tarea{background:var(--tarjeta);border:1px solid var(--borde);border-left:4px solid var(--gris);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .tarjeta-tarea.prioridad-alta{border-left-color:var(--rojo)}
@@ -125,13 +126,6 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 .mensaje.error{background:var(--rojo-suave);color:var(--rojo)}
 .mensaje.oculto{opacity:0;transform:translateY(-8px)}
 
-/* ---------- panel notificaciones ---------- */
-.panel-notif{position:fixed;top:56px;right:10px;width:min(92vw,340px);background:var(--tarjeta);border:1px solid var(--borde);border-radius:12px;box-shadow:var(--sombra);z-index:500;max-height:70vh;overflow-y:auto;display:none}
-.panel-notif.visible{display:block}
-.notif-item{padding:12px 14px;border-bottom:1px solid var(--borde);font-size:.85rem}
-.notif-item.no-leida{background:var(--azul-suave)}
-.notif-item b{display:block;margin-bottom:2px}
-.notif-item small{color:var(--texto-suave)}
 
 @media (max-width:640px){
   .topbar{padding:8px 12px}
@@ -197,20 +191,25 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 
 <div id="appView" hidden>
   <header class="topbar">
-    <button class="marca" id="btnInicio"><img src="icono-192.png" alt=""> Agenda</button>
     <div class="menu-nav" id="menuNav">
-      <button class="boton-menu" id="btnMenu" type="button">
-        <span id="menuActualTexto">Hoy</span><span class="flecha">▾</span>
+      <button class="boton-menu" id="btnMenu" type="button" title="Abrir menú">
+        <img src="icono-192.png" alt="" class="menu-icono-app">
+        <span id="menuActualTexto">Hoy</span>
+        <span class="flecha">▾</span>
       </button>
       <div class="menu-lista" id="menuLista"></div>
     </div>
     <div class="topbar-der">
-      <button class="icono-campana" id="btnCampana" title="Notificaciones">🔔<span class="punto"></span></button>
-      <button class="avatar" id="btnAvatar" title="Cuenta">?</button>
+      <div class="avatar" id="avatarUsuario" title="Tu cuenta">?</div>
+      <button class="icono-salir" id="btnAvatar" title="Cerrar sesión">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+          <polyline points="16 17 21 12 16 7"></polyline>
+          <line x1="21" y1="12" x2="9" y2="12"></line>
+        </svg>
+      </button>
     </div>
   </header>
-
-  <div class="panel-notif" id="panelNotif"></div>
 
   <main class="contenedor" id="vista"></main>
 

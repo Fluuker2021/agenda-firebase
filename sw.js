@@ -8,6 +8,23 @@
 //  2) Recibe las notificaciones push de Firebase Cloud Messaging cuando la
 //     app está cerrada o en segundo plano (igual que un mensaje de WhatsApp).
 
+/* ===================== CONFIGURACIÓN (edita esto) =====================
+   Pega aquí EXACTAMENTE el mismo firebaseConfig que ya pegaste en
+   index.html (Firebase Console → Configuración del proyecto → Tus apps →
+   ícono Web). Este archivo es un archivo aparte que el navegador ejecuta
+   por su cuenta (no puede "leer" el de index.html), así que el mismo
+   bloque hay que pegarlo también aquí para que las notificaciones push
+   funcionen con la app cerrada o en segundo plano. */
+const firebaseConfig = {
+  apiKey: "AIzaSyDVa8QNEY7wQNwkmit_NrmksQkfm-k6jYs",
+  authDomain: "agenda-trabajo-75f2f.firebaseapp.com",
+  projectId: "agenda-trabajo-75f2f",
+  storageBucket: "agenda-trabajo-75f2f.firebasestorage.app",
+  messagingSenderId: "860734172074",
+  appId: "1:860734172074:web:e9110f67e3f1089a16d9d3"
+};
+/* ======================================================================= */
+
 const CACHE = "agenda-estaticos-v1";
 const ESTATICOS = ["icono-192.png", "icono-512.png", "icono-180.png", "manifest.webmanifest"];
 
@@ -32,17 +49,19 @@ self.addEventListener("fetch", (e) => {
 });
 
 // ---------- Firebase Cloud Messaging (push en 2do plano) ----------
-// La configuración llega por la URL con la que se registra este worker
-// (ver iniciarNotificaciones() en app.js), así no hay que editar este
-// archivo a mano ni duplicar el bloque de CONFIGURACIÓN de index.html.
+// Antes esta configuración se leía de la URL con la que app.js registraba
+// este archivo (sw.js?config=...). Eso causaba un problema real: como el
+// texto del archivo sw.js era siempre el mismo (la URL no cuenta como parte
+// del archivo), el navegador podía decidir que "no hay nada nuevo que
+// activar" y se quedaba usando una copia vieja de este worker que nunca
+// llegó a inicializar Firebase. Por eso ahora el firebaseConfig vive aquí
+// mismo, fijo en el archivo, para que el worker SIEMPRE tenga lo que
+// necesita apenas el navegador lo instala.
 importScripts("https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js");
 
-let config = {};
-try { config = JSON.parse(new URL(location.href).searchParams.get("config") || "{}"); } catch (e) { /* aún sin configurar */ }
-
-if (config.apiKey) {
-  firebase.initializeApp(config);
+if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "PEGAR_AQUI") {
+  firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
   messaging.onBackgroundMessage((payload) => {
     const titulo = payload.notification?.title || "Agenda de Trabajo";

@@ -505,20 +505,28 @@ $("btnTodaSerie").addEventListener("click", async () => {
 // ---------------------------------------------------------------------
 async function iniciarNotificaciones() {
   try {
-    if (!(await mensajeriaSoportada())) return;
-    if (!VAPID_KEY || VAPID_KEY === "PEGAR_AQUI") return; // todavía no configurado
+    if (!("serviceWorker" in navigator)) { console.warn("[push] este navegador no tiene service workers."); return; }
+    if (!(await mensajeriaSoportada())) { console.warn("[push] este navegador no soporta notificaciones push de Firebase."); return; }
+    if (!VAPID_KEY || VAPID_KEY === "PEGAR_AQUI") { console.warn("[push] falta pegar la clave VAPID en index.html."); return; }
     const permiso = await Notification.requestPermission();
-    if (permiso !== "granted") return;
-    const registro = await navigator.serviceWorker.register(
-      "sw.js?config=" + encodeURIComponent(JSON.stringify(firebaseConfig))
-    );
+    if (permiso !== "granted") { console.warn("[push] el usuario no dio permiso de notificaciones:", permiso); return; }
+    // El service worker (sw.js) ya quedó registrado al cargar la página (ver
+    // index.html). Antes aquí se volvía a registrar con la configuración en
+    // la URL (sw.js?config=...), pero eso podía dejar "atrapada" una copia
+    // vieja del worker sin Firebase inicializado, porque el navegador compara
+    // el CONTENIDO del archivo (no la URL) para decidir si hay algo nuevo que
+    // activar. Ahora reutilizamos el worker ya activo en vez de registrar uno
+    // nuevo.
+    const registro = await navigator.serviceWorker.ready;
     const messaging = getMessaging(app);
     const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: registro });
-    if (token) await updateDoc(doc(db, "usuarios", miUid), { fcmTokens: arrayUnion(token) });
+    if (!token) { console.warn("[push] Firebase no entregó un token (revisa la clave VAPID)."); return; }
+    await updateDoc(doc(db, "usuarios", miUid), { fcmTokens: arrayUnion(token) });
     onMessage(messaging, (payload) => {
       flash(payload.notification?.title || "Tienes una notificación nueva.");
     });
-  } catch (e) { /* sin push real; no es grave */ }
+    console.log("[push] notificaciones activadas correctamente.");
+  } catch (e) { console.error("[push] no se pudo activar notificaciones push:", e); }
 }
 
 // ---------------------------------------------------------------------

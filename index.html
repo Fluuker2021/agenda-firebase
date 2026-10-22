@@ -341,8 +341,10 @@ window.__fb = { app, auth, db, collection, collectionGroup, doc, getDoc, getDocs
 
 // Registra el service worker ya desde la pantalla de login, para que el
 // navegador pueda ofrecer "Instalar app" incluso antes de iniciar sesión.
-// Una vez el usuario entra, iniciarNotificaciones() en app.js lo vuelve a
-// registrar con la configuración de Firebase para habilitar el push real.
+// IMPORTANTE: sw.js tiene su PROPIO bloque de CONFIGURACIÓN con el
+// firebaseConfig (es un archivo aparte, no puede leer el de aquí), así que
+// hay que pegar los mismos datos también ahí para que el push real llegue
+// con la app cerrada o en segundo plano.
 if ("serviceWorker" in navigator && !window.__EMULADOR__) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }

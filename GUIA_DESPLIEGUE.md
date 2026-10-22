@@ -257,6 +257,16 @@ las funciones (algo que yo te ayudaría a hacer).
    ```
    Reemplaza los valores `"PEGAR_AQUI"` del objeto `firebaseConfig` con los que
    te dio Firebase, y `VAPID_KEY` con la clave del Paso 5. Guarda el archivo.
+3. **Importante — hazlo también en `sw.js`:** abre el archivo `sw.js` (está en
+   la misma carpeta) y verás el mismo bloque `firebaseConfig = {...}` cerca del
+   principio. Pega ahí EXACTAMENTE los mismos valores que acabas de poner en
+   `index.html` (no hace falta repetir el `VAPID_KEY`, solo el `firebaseConfig`).
+   Esto es necesario porque `sw.js` es un archivo que el navegador ejecuta por
+   su cuenta, aparte de `index.html`, y no puede "ver" la configuración de ese
+   otro archivo. Si te saltas este paso, la app funciona normal pero las
+   notificaciones push NO van a sonar ni aparecer en la pantalla del celular
+   cuando la app esté cerrada o en segundo plano — justamente lo que simula un
+   mensaje de WhatsApp.
 
 ## Paso 7 — Publicar la app (GitHub Pages)
 
@@ -353,10 +363,30 @@ Firebase.
 - **"Tu cuenta todavía no está configurada en la app"**: la cuenta de
   Authentication existe pero falta su perfil en "Administración" (o, si eres
   tú como primer owner, falta el documento manual del Paso 3).
-- **No llega la notificación push, pero sí aparece en la campanita**: revisa
-  que el navegador tenga permiso de notificaciones para el sitio (candado en
-  la barra de direcciones), y que la app esté instalada (no solo abierta en
-  una pestaña) si es iPhone.
+- **No llega la notificación push al celular (ni suena ni aparece en la
+  pantalla)**: revisa en este orden:
+  1. Que pegaste el `firebaseConfig` también en `sw.js`, no solo en
+     `index.html` (ver Paso 6, punto 3). Es el error más común.
+  2. Que el navegador/celular tenga permiso de notificaciones para el sitio
+     (en Android: ⋮ → Información del sitio → Notificaciones; en iPhone, la
+     app tiene que estar **instalada** — "Agregar a pantalla de inicio" —, no
+     solo abierta en Safari).
+  3. Si ya habías entrado a la app ANTES de pegar la configuración en
+     `sw.js`, el celular puede haber guardado una copia vieja del service
+     worker. Para forzarlo a tomar la versión nueva: en Android, mantén
+     presionado el ícono de la app → "Información de la app" → Almacenamiento
+     → "Borrar datos" (o desinstalarla y volver a instalarla desde el
+     navegador); en escritorio, abre las herramientas de desarrollador (F12)
+     → pestaña "Application"/"Aplicación" → "Service Workers" → "Unregister",
+     y recarga la página.
+  4. En Firebase Console → Functions → Logs, revisa que la función
+     `alCrearTarea`/`alReasignarTarea` se haya ejecutado sin errores al
+     asignar la tarea.
+  5. Con el navegador conectado (DevTools → Console), conecta el celular por
+     cable y usa `chrome://inspect` desde una computadora, o simplemente
+     revisa los mensajes `[push] ...` que ahora aparecen en la consola — te
+     dicen exactamente en qué paso se detuvo (permiso no concedido, falta la
+     clave VAPID, etc.).
 - **"No se pudo guardar (¿permisos?)"** al crear o editar algo: casi siempre es
   que la persona está intentando algo fuera de su alcance (ej. un jefe de área
   asignando una tarea a alguien que no gestiona) — es la regla de seguridad

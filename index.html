@@ -47,9 +47,16 @@ h2{font-size:1.05rem;margin:0 0 10px}
 .topbar{display:flex;align-items:center;justify-content:space-between;background:var(--tarjeta);border-bottom:1px solid var(--borde);padding:10px 16px;gap:10px;position:sticky;top:0;z-index:100}
 .marca{display:flex;align-items:center;gap:8px;font-weight:700;border:none;background:none;color:var(--texto);padding:0}
 .marca img{width:28px;height:28px;border-radius:7px}
-nav.tabs{display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch}
-nav.tabs button{white-space:nowrap;border:none;background:none;color:var(--texto-suave);padding:8px 10px;border-radius:8px;font-size:.85rem;font-weight:600;flex-shrink:0}
-nav.tabs button.activa{color:var(--azul);background:var(--azul-suave)}
+.menu-nav{position:relative}
+.boton-menu{display:flex;align-items:center;gap:6px;border:1px solid var(--borde);background:var(--tarjeta);color:var(--texto);padding:8px 12px;border-radius:8px;font-size:.88rem;font-weight:600}
+.boton-menu .flecha{font-size:.7rem;color:var(--texto-suave);transition:transform .15s}
+.boton-menu.abierto .flecha{transform:rotate(180deg)}
+.menu-lista{position:absolute;top:calc(100% + 6px);left:0;min-width:210px;background:var(--tarjeta);border:1px solid var(--borde);border-radius:10px;box-shadow:var(--sombra);z-index:600;overflow:hidden;display:none}
+.menu-lista.visible{display:block}
+.menu-lista button{display:block;width:100%;text-align:left;border:none;background:none;color:var(--texto);padding:11px 14px;font-size:.88rem;font-weight:600;border-bottom:1px solid var(--borde)}
+.menu-lista button:last-child{border-bottom:none}
+.menu-lista button:hover{background:var(--fondo)}
+.menu-lista button.activa{color:var(--azul);background:var(--azul-suave)}
 .topbar-der{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .icono-campana{position:relative;width:36px;height:36px;border-radius:8px;border:1px solid var(--borde);background:var(--tarjeta);font-size:1.1rem;display:flex;align-items:center;justify-content:center}
 .icono-campana .punto{position:absolute;top:4px;right:4px;width:9px;height:9px;border-radius:50%;background:var(--rojo);display:none}
@@ -191,7 +198,12 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 <div id="appView" hidden>
   <header class="topbar">
     <button class="marca" id="btnInicio"><img src="icono-192.png" alt=""> Agenda</button>
-    <nav class="tabs" id="tabsNav"></nav>
+    <div class="menu-nav" id="menuNav">
+      <button class="boton-menu" id="btnMenu" type="button">
+        <span id="menuActualTexto">Hoy</span><span class="flecha">▾</span>
+      </button>
+      <div class="menu-lista" id="menuLista"></div>
+    </div>
     <div class="topbar-der">
       <button class="icono-campana" id="btnCampana" title="Notificaciones">🔔<span class="punto"></span></button>
       <button class="avatar" id="btnAvatar" title="Cuenta">?</button>

@@ -115,6 +115,8 @@ auth.onAuthStateChanged(async (u) => {
   $("modalDiaLista").innerHTML = "";
   $("panelNotif").innerHTML = "";
   $("panelNotif").classList.remove("visible");
+  $("menuLista").classList.remove("visible");
+  $("btnMenu").classList.remove("abierto");
   if (!u) {
     $("loginView").hidden = false;
     $("appView").hidden = true;
@@ -178,18 +180,34 @@ function nombreDe(uid) { return usuariosCache.get(uid)?.nombre || "—"; }
 // ---------------------------------------------------------------------
 // Navegación
 // ---------------------------------------------------------------------
+let pestañasDisponibles = [["hoy", "Hoy"]];
+
 function construirNav() {
   const tabs = [["hoy", "Hoy"]];
   if (puedoAdministrar()) {
     tabs.push(["todas", "Todas las tareas"], ["calendario", "Calendario"], ["equipo", "Equipo"]);
   }
   if (soyOwner()) tabs.push(["admin", "Administración"]);
-  $("tabsNav").innerHTML = tabs.map(([id, t]) => `<button data-vista="${id}">${t}</button>`).join("");
-  $("tabsNav").querySelectorAll("button").forEach((b) => b.onclick = () => irA(b.dataset.vista));
+  pestañasDisponibles = tabs;
+  $("menuLista").innerHTML = tabs.map(([id, t]) => `<button type="button" data-vista="${id}">${t}</button>`).join("");
+  $("menuLista").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    irA(b.dataset.vista);
+    cerrarMenu();
+  }));
 }
 function marcarTabActiva() {
-  $("tabsNav").querySelectorAll("button").forEach((b) => b.classList.toggle("activa", b.dataset.vista === vistaActual));
+  $("menuLista").querySelectorAll("button").forEach((b) => b.classList.toggle("activa", b.dataset.vista === vistaActual));
+  const actual = pestañasDisponibles.find(([id]) => id === vistaActual);
+  $("menuActualTexto").textContent = actual ? actual[1] : "Menú";
 }
+function abrirMenu() { $("menuLista").classList.add("visible"); $("btnMenu").classList.add("abierto"); }
+function cerrarMenu() { $("menuLista").classList.remove("visible"); $("btnMenu").classList.remove("abierto"); }
+$("btnMenu").addEventListener("click", () => {
+  $("menuLista").classList.contains("visible") ? cerrarMenu() : abrirMenu();
+});
+document.addEventListener("click", (e) => {
+  if (!$("menuNav").contains(e.target)) cerrarMenu();
+});
 function irA(v) { vistaActual = v; marcarTabActiva(); renderizarVista(); }
 $("btnInicio").addEventListener("click", () => irA("hoy"));
 

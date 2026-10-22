@@ -34,9 +34,11 @@ Reemplaza por completo a la versión anterior (la de PythonAnywhere/escritorio).
   centavos al mes — pero technically queda abierta la posibilidad de que
   Google te cobre si el uso crece mucho, así que de cuando en cuando conviene
   revisar el estado de facturación en la consola de Firebase.
-- Instala **Node.js** (18 o más reciente) en tu computadora si no lo tienes —
-  lo necesitas para el paso de las Cloud Functions. Verifícalo con `node -v` en
-  una terminal.
+- Necesitas instalar **Node.js** en tu computadora — lo necesitas para el Paso 4
+  (las Cloud Functions). No te preocupes si nunca lo has usado: el Paso 4 te
+  explica exactamente cómo instalarlo y qué escribir, con capturas en palabras
+  de cada cosa que vas a ver en pantalla (estás en Windows, así que todo lo que
+  sigue está pensado para eso).
 
 ## Paso 1 — Crear el proyecto en Firebase
 
@@ -90,25 +92,150 @@ Reemplaza por completo a la versión anterior (la de PythonAnywhere/escritorio).
 
 ## Paso 4 — Desplegar las Cloud Functions (el push)
 
-Esto sí se hace desde una terminal en tu computadora, con los archivos de esta
-carpeta:
+Este es el único paso que no se hace con clics, sino escribiendo unos comandos
+en una ventana llamada **terminal** (en Windows se llama PowerShell). No hace
+falta que sepas programación: vas a ir copiando y pegando cada línea, una por
+una, y revisando que el resultado se parezca a lo que te describo. Tómate tu
+tiempo, no hay forma de "romper" nada por equivocarte aquí — si algo sale mal,
+simplemente se queda igual que estaba y lo reintentas.
 
-```bash
-npm install -g firebase-tools      # una sola vez
-firebase login                     # abre el navegador, inicia sesión con la
-                                    # misma cuenta de Google del proyecto
-cd agenda-firebase                 # la carpeta de este proyecto
-firebase use --add                 # elige tu proyecto (ej. agenda-trabajo) y
-                                    # ponle de alias "default"
+### 4.1 — Instalar Node.js (si no lo tienes)
+
+1. Abre tu navegador y ve a **[nodejs.org](https://nodejs.org)**.
+2. Vas a ver dos botones de descarga — elige el que diga **"LTS"** (es la
+   versión recomendada, no la más nueva).
+3. Abre el archivo descargado (algo como `node-v20...-x64.msi`) y dale
+   "Siguiente" a todo con las opciones que vienen marcadas por defecto, hasta
+   terminar la instalación. Si te pide reiniciar la computadora, hazlo.
+
+### 4.2 — Abrir PowerShell
+
+1. Haz clic en el botón **Inicio** de Windows (la banderita, abajo a la
+   izquierda).
+2. Escribe `PowerShell` (sin más, directo con el teclado).
+3. Haz clic en **"Windows PowerShell"** cuando aparezca en los resultados.
+4. Se va a abrir una ventana azul con texto — ahí es donde vas a escribir o
+   pegar todo lo que sigue. Para **pegar** en esta ventana: clic derecho
+   dentro de ella (no hay botón de pegar ni Ctrl+V en versiones viejas de
+   PowerShell, pero clic derecho casi siempre funciona).
+
+### 4.3 — Revisar que Node quedó instalado
+
+Escribe esto y presiona Enter:
+
+```
+node -v
+```
+
+Debería responder algo como `v20.11.0` (el número exacto no importa). Si en
+vez de eso dice algo como *"node no se reconoce como un comando..."*, cierra
+esta ventana de PowerShell, ábrela de nuevo (Paso 4.2) e inténtalo otra vez —
+a veces Windows necesita que abras una ventana nueva para "enterarse" de que
+Node ya está instalado.
+
+### 4.4 — Instalar las herramientas de Firebase
+
+Pega esto y Enter:
+
+```
+npm install -g firebase-tools
+```
+
+Va a tardar 1 o 2 minutos mostrando texto que corre solo — es normal, espera a
+que vuelva a aparecer el cursor parpadeando solo.
+
+**Si te sale un error en rojo que menciona "no se puede cargar... porque la
+ejecución de scripts está deshabilitada en este sistema" (execution policy):**
+esto es un permiso de seguridad de Windows, se arregla una sola vez:
+1. Cierra esta ventana. Vuelve a abrir PowerShell, pero esta vez haciendo
+   **clic derecho** sobre "Windows PowerShell" → **"Ejecutar como
+   administrador"** → acepta el aviso que te salga.
+2. Pega: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` y Enter.
+3. Te va a preguntar si confirmas — escribe `S` (o `Y`) y Enter.
+4. Cierra esa ventana de administrador y vuelve a abrir PowerShell normal
+   (Paso 4.2) para seguir con el resto de los pasos.
+
+### 4.5 — Iniciar sesión en Firebase
+
+```
+firebase login
+```
+
+Se va a abrir tu navegador pidiéndote iniciar sesión — usa la **misma cuenta
+de Google** con la que creaste el proyecto en el Paso 1. Acepta los permisos.
+Cuando termine, vuelve a la ventana de PowerShell: debería decir algo como
+`✔ Success! Logged in as tucorreo@gmail.com`.
+
+### 4.6 — Entrar a la carpeta del proyecto
+
+Primero necesitas la ubicación exacta de la carpeta `agenda-firebase` que
+descomprimiste del zip que te mandé:
+1. Abre el **Explorador de archivos** y navega hasta esa carpeta (ábrela, debe
+   mostrar `index.html`, `app.js`, `firebase.json`, etc. adentro).
+2. Haz clic una vez sobre la barra de direcciones de arriba (donde se ve la
+   ruta) — se va a poner en modo texto y seleccionar todo. Cópialo
+   (Ctrl+C).
+3. En PowerShell, escribe `cd "` (con la comilla), pega la ruta (clic derecho),
+   y cierra con otra comilla `"`. Por ejemplo:
+   ```
+   cd "C:\Users\Anthony\Downloads\agenda-firebase\agenda-firebase"
+   ```
+   (tu ruta real va a ser distinta — es la que copiaste). Enter.
+4. Para comprobar que estás en el lugar correcto, escribe `dir` y Enter —
+   deberías ver listados `index.html`, `app.js`, `firebase.json`, la carpeta
+   `functions`, etc.
+
+### 4.7 — Instalar lo que necesitan las Cloud Functions
+
+```
+cd functions
+npm install
+cd ..
+```
+
+(el primer `cd functions` entra a esa subcarpeta, `npm install` descarga lo
+que ese código necesita — tarda otro minuto o dos — y `cd ..` te regresa a la
+carpeta principal del proyecto).
+
+### 4.8 — Conectar esta carpeta con tu proyecto de Firebase
+
+```
+firebase use --add
+```
+
+Te va a mostrar una lista de tus proyectos de Firebase — usa las flechas del
+teclado (↑ ↓) para elegir el que creaste en el Paso 1 (ej. `agenda-trabajo`) y
+Enter. Luego te pregunta un "alias": escribe `default` y Enter.
+
+### 4.9 — Desplegar
+
+```
 firebase deploy --only firestore:rules,functions
 ```
 
-(Lo de `firestore:rules` en el mismo comando no hace daño aunque ya las hayas
-pegado a mano en el paso anterior — deja ambos caminos sincronizados.)
+Esta es la parte que de verdad publica las reglas y activa el push. La
+primera vez puede tardar varios minutos (Google está preparando todo del lado
+de ellos) — vas a ver bastante texto pasar, es normal. Si en algún momento te
+pregunta algo con "(y/N)", normalmente la respuesta es `y` y Enter.
 
-Si todo sale bien, verás algo como `✔ functions[alCrearTarea(us-central1)]
-Successful create operation`. Eso significa que ya está funcionando: cada vez
-que se cree o reasigne una tarea, la función va a correr sola.
+Si todo sale bien, al final vas a ver algo como:
+```
+✔  functions[alCrearTarea(us-central1)] Successful create operation.
+✔  functions[alReasignarTarea(us-central1)] Successful create operation.
+✔  Deploy complete!
+```
+Eso significa que ya quedó funcionando: de ahora en adelante, cada vez que se
+cree o reasigne una tarea, la notificación push va a salir sola.
+
+**Si en vez de eso te pide "habilitar" alguna API de Google Cloud** (por
+ejemplo Cloud Build o Artifact Registry) con un enlace: ábrelo, haz clic en
+"Habilitar" en esa página, espera medio minuto y vuelve a correr el mismo
+comando `firebase deploy --only firestore:rules,functions` de nuevo — es
+normal que la primera vez pida esto.
+
+Una vez que termine este paso, ya no vas a necesitar volver a abrir PowerShell
+para nada del uso normal de la app — solo si en el futuro cambias el código de
+las funciones (algo que yo te ayudaría a hacer).
 
 ## Paso 5 — Activar Cloud Messaging (push) y conseguir la clave VAPID
 

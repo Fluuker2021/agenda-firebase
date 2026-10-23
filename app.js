@@ -525,7 +525,15 @@ async function marcarEstadoPush(estado) {
   catch (e) { /* esto es solo diagnóstico; si falla, no es grave */ }
 }
 
+let notificacionesEnCurso = false;
 async function iniciarNotificaciones() {
+  // Si por algún motivo esta función se llama dos veces casi al mismo tiempo
+  // (ej. el estado de sesión del navegador se dispara más de una vez), dos
+  // intentos de suscripción push simultáneos chocan entre sí y Chrome cancela
+  // uno con "AbortError: Registration failed - push service error". Este
+  // seguro evita que eso pase.
+  if (notificacionesEnCurso) return;
+  notificacionesEnCurso = true;
   try {
     if (!("serviceWorker" in navigator)) {
       console.warn("[push] este navegador no tiene service workers.");
@@ -566,7 +574,12 @@ async function iniciarNotificaciones() {
     await marcarEstadoPush("activo");
   } catch (e) {
     console.error("[push] no se pudo activar notificaciones push:", e);
-    await marcarEstadoPush("error_" + String(e?.code || e?.message || e).slice(0, 180));
+    // e.name trae el tipo de error en texto (ej. "AbortError") que es mucho
+    // más claro que e.code (un número heredado, ej. 20 para AbortError).
+    const detalle = e?.name ? `${e.name}${e.message ? ": " + e.message : ""}` : String(e?.code || e?.message || e);
+    await marcarEstadoPush("error_" + detalle.slice(0, 180));
+  } finally {
+    notificacionesEnCurso = false;
   }
 }
 

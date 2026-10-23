@@ -382,11 +382,23 @@ Firebase.
   4. En Firebase Console → Functions → Logs, revisa que la función
      `alCrearTarea`/`alReasignarTarea` se haya ejecutado sin errores al
      asignar la tarea.
-  5. Con el navegador conectado (DevTools → Console), conecta el celular por
-     cable y usa `chrome://inspect` desde una computadora, o simplemente
-     revisa los mensajes `[push] ...` que ahora aparecen en la consola — te
-     dicen exactamente en qué paso se detuvo (permiso no concedido, falta la
-     clave VAPID, etc.).
+  5. **La forma más fácil de revisar, sin tocar el celular de la otra
+     persona:** entra a Firebase Console → Firestore Database → colección
+     `usuarios` → abre el documento de esa persona y mira el campo
+     `pushEstado`. La app lo actualiza sola cada vez que alguien entra:
+     - `activo` → todo quedó bien de su lado; si aun así no le llega el
+       push, revisa los "Logs" de Functions (punto 4).
+     - `sin_permiso_denied` → la persona le dio "Bloquear" a la ventana de
+       permiso de notificaciones (tiene que volver a darle permiso desde el
+       candado del navegador).
+     - `falta_vapid_key` → a ESE dispositivo no le llegó un `index.html` con
+       la clave VAPID ya pegada (puede ser caché vieja; que recargue
+       forzando, Ctrl+Shift+R o equivalente).
+     - `sin_token` o algo que empieza con `error_` → cópiame exactamente el
+       texto de ese campo y lo reviso contigo.
+     - Si el campo `pushEstado` no existe directamente, es que esa persona
+       todavía no ha vuelto a entrar desde que subiste la versión más
+       reciente de la app.
 - **"No se pudo guardar (¿permisos?)"** al crear o editar algo: casi siempre es
   que la persona está intentando algo fuera de su alcance (ej. un jefe de área
   asignando una tarea a alguien que no gestiona) — es la regla de seguridad

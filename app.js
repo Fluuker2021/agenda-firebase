@@ -568,7 +568,7 @@ async function iniciarNotificaciones() {
     }
     await updateDoc(doc(db, "usuarios", miUid), { fcmTokens: arrayUnion(token) });
     onMessage(messaging, (payload) => {
-      flash(payload.notification?.title || "Tienes una notificación nueva.");
+      flash(payload.data?.titulo || "Tienes una notificación nueva.");
     });
     console.log("[push] notificaciones activadas correctamente.");
     await marcarEstadoPush("activo");

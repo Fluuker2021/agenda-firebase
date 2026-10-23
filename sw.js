@@ -16,12 +16,12 @@
    bloque hay que pegarlo también aquí para que las notificaciones push
    funcionen con la app cerrada o en segundo plano. */
 const firebaseConfig = {
-  apiKey: "AIzaSyDVa8QNEY7wQNwkmit_NrmksQkfm-k6jYs",
-  authDomain: "agenda-trabajo-75f2f.firebaseapp.com",
-  projectId: "agenda-trabajo-75f2f",
-  storageBucket: "agenda-trabajo-75f2f.firebasestorage.app",
-  messagingSenderId: "860734172074",
-  appId: "1:860734172074:web:e9110f67e3f1089a16d9d3"
+  apiKey: "PEGAR_AQUI",
+  authDomain: "PEGAR_AQUI.firebaseapp.com",
+  projectId: "PEGAR_AQUI",
+  storageBucket: "PEGAR_AQUI.appspot.com",
+  messagingSenderId: "PEGAR_AQUI",
+  appId: "PEGAR_AQUI"
 };
 /* ======================================================================= */
 
@@ -63,10 +63,13 @@ importScripts("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-com
 if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "PEGAR_AQUI") {
   firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
+  // El mensaje llega como "data" pura (ver functions/index.js), no como
+  // "notification", justamente para que el navegador NO muestre un aviso
+  // automático por su cuenta — así solo aparece el que mostramos aquí.
   messaging.onBackgroundMessage((payload) => {
-    const titulo = payload.notification?.title || "Agenda de Trabajo";
+    const titulo = payload.data?.titulo || "Agenda de Trabajo";
     self.registration.showNotification(titulo, {
-      body: payload.notification?.body || "",
+      body: payload.data?.cuerpo || "",
       icon: "icono-192.png",
       badge: "icono-192.png",
     });

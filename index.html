@@ -148,7 +148,9 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 
 /* ---------- equipo / kpis ---------- */
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:22px}
-.kpi-tarjeta{background:var(--tarjeta);border:1px solid var(--borde);border-radius:12px;padding:14px}
+.kpi-tarjeta{background:var(--tarjeta);border:1px solid var(--borde);border-radius:12px;padding:14px;display:block;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;transition:border-color .15s,transform .15s}
+.kpi-tarjeta:hover{border-color:var(--azul);transform:translateY(-1px)}
+.kpi-tarjeta:focus-visible{outline:2px solid var(--azul);outline-offset:2px}
 .kpi-tarjeta-cabecera{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .kpi-tarjeta-cabecera .avatar{width:30px;height:30px;font-size:.75rem}
 .kpi-nombre{font-weight:700;font-size:.9rem}
@@ -157,9 +159,19 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 .kpi-barra-rellena{height:100%;border-radius:999px}
 .kpi-fila{display:flex;justify-content:space-between;font-size:.78rem;color:var(--texto-suave);margin-bottom:3px}
 .kpi-fila b{color:var(--texto)}
+.kpi-fila-separada{border-top:1px solid var(--borde);margin-top:6px;padding-top:7px}
 .kpi-carga-alta .kpi-barra-rellena{background:var(--rojo)}
 .kpi-carga-media .kpi-barra-rellena{background:var(--naranja)}
 .kpi-carga-baja .kpi-barra-rellena{background:var(--verde)}
+.kpi-estado{font-size:.75rem;font-weight:600;background:var(--azul-suave);color:var(--azul);border-radius:999px;padding:3px 10px;display:inline-block;margin-bottom:10px}
+.kpi-estado-vacio{background:var(--fondo);color:var(--texto-suave);font-weight:500}
+
+/* ---------- asistencia ---------- */
+.asistencia-opciones{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.asistencia-opcion{display:flex;align-items:center;gap:8px;background:var(--tarjeta);border:1px solid var(--borde);border-radius:999px;padding:10px 16px;font:inherit;font-weight:600;font-size:.85rem;color:var(--texto);cursor:pointer;transition:border-color .15s,background .15s}
+.asistencia-opcion:hover{border-color:var(--azul)}
+.asistencia-opcion.seleccionada{background:var(--azul-suave);border-color:var(--azul);color:var(--azul)}
+.asistencia-emoji{font-size:1.1rem}
 .form-inline{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:var(--tarjeta);border:1px solid var(--borde);border-radius:10px;padding:14px;margin-bottom:18px}
 .form-inline .campo{margin-bottom:0;flex:1;min-width:140px}
 .lista-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}

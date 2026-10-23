@@ -26,6 +26,17 @@ const fechaLarga = (d = new Date()) => `${DIAS_ES[(d.getDay() + 6) % 7].replace(
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const iniciales = (nombre) => (nombre || "?").trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() || "").join("");
 
+// Estados de asistencia que cualquier persona (jefe o personal) puede marcar
+// sobre sí misma en la pestaña "Asistencia", y que se ven junto a su nombre
+// en "Equipo".
+const ESTADOS_ASISTENCIA = {
+  oficina: { emoji: "🏢", etiqueta: "En oficina" },
+  campo: { emoji: "⛏️", etiqueta: "En campo" },
+  examen_medico: { emoji: "🏥", etiqueta: "Examen médico" },
+  remoto: { emoji: "🏠", etiqueta: "Remoto" },
+  ausente: { emoji: "🔴", etiqueta: "Ausente" },
+};
+
 // CSV sencillo (soporta campos entre comillas con comas/comillas escapadas)
 // usado por la importación de tareas en la Administración.
 function parsearCSV(texto) {
@@ -64,6 +75,7 @@ let miUid = null;
 let miPerfil = null; // {nombre, email, rol, gestionados, telefono, activo}
 let usuariosCache = new Map(); // uid -> {id, ...datos}
 let vistaActual = "hoy";
+let filtroResponsablePreset = null; // uid a preseleccionar al entrar a "Todas las tareas" (ver vistaEquipo)
 const unsubs = {}; // listeners activos por vista, para apagarlos al cambiar
 
 function soyOwner() { return miPerfil?.rol === "owner"; }
@@ -182,7 +194,7 @@ function nombreDe(uid) { return usuariosCache.get(uid)?.nombre || "—"; }
 let pestañasDisponibles = [["hoy", "Hoy"]];
 
 function construirNav() {
-  const tabs = [["hoy", "Hoy"]];
+  const tabs = [["hoy", "Hoy"], ["asistencia", "Asistencia"]];
   if (puedoAdministrar()) {
     tabs.push(["todas", "Todas las tareas"], ["calendario", "Calendario"], ["equipo", "Equipo"]);
   }
@@ -212,6 +224,7 @@ function irA(v) { vistaActual = v; marcarTabActiva(); renderizarVista(); }
 function renderizarVista() {
   apagarTodosMenos(null);
   if (vistaActual === "hoy") return vistaHoy();
+  if (vistaActual === "asistencia") return vistaAsistencia();
   if (vistaActual === "todas" && puedoAdministrar()) return vistaTodas();
   if (vistaActual === "calendario" && puedoAdministrar()) return vistaCalendario();
   if (vistaActual === "equipo" && puedoAdministrar()) return vistaEquipo();
@@ -503,13 +516,34 @@ $("btnTodaSerie").addEventListener("click", async () => {
 // lo soporta o la persona no da permiso, no pasa nada grave: simplemente no
 // llegan avisos push, pero el resto de la app funciona igual.
 // ---------------------------------------------------------------------
+// Deja constancia en el propio perfil (usuarios/{uid}.pushEstado) de en qué
+// quedó el intento de activar el push, para poder revisarlo desde Firebase
+// Console → Firestore sin necesidad de conectar el celular a una
+// computadora para ver la consola del navegador.
+async function marcarEstadoPush(estado) {
+  try { await updateDoc(doc(db, "usuarios", miUid), { pushEstado: estado, pushEstadoEn: serverTimestamp() }); }
+  catch (e) { /* esto es solo diagnóstico; si falla, no es grave */ }
+}
+
 async function iniciarNotificaciones() {
   try {
-    if (!("serviceWorker" in navigator)) { console.warn("[push] este navegador no tiene service workers."); return; }
-    if (!(await mensajeriaSoportada())) { console.warn("[push] este navegador no soporta notificaciones push de Firebase."); return; }
-    if (!VAPID_KEY || VAPID_KEY === "PEGAR_AQUI") { console.warn("[push] falta pegar la clave VAPID en index.html."); return; }
+    if (!("serviceWorker" in navigator)) {
+      console.warn("[push] este navegador no tiene service workers.");
+      return marcarEstadoPush("sin_service_worker");
+    }
+    if (!(await mensajeriaSoportada())) {
+      console.warn("[push] este navegador no soporta notificaciones push de Firebase.");
+      return marcarEstadoPush("navegador_no_soportado");
+    }
+    if (!VAPID_KEY || VAPID_KEY === "PEGAR_AQUI") {
+      console.warn("[push] falta pegar la clave VAPID en index.html.");
+      return marcarEstadoPush("falta_vapid_key");
+    }
     const permiso = await Notification.requestPermission();
-    if (permiso !== "granted") { console.warn("[push] el usuario no dio permiso de notificaciones:", permiso); return; }
+    if (permiso !== "granted") {
+      console.warn("[push] el usuario no dio permiso de notificaciones:", permiso);
+      return marcarEstadoPush("sin_permiso_" + permiso);
+    }
     // El service worker (sw.js) ya quedó registrado al cargar la página (ver
     // index.html). Antes aquí se volvía a registrar con la configuración en
     // la URL (sw.js?config=...), pero eso podía dejar "atrapada" una copia
@@ -520,13 +554,59 @@ async function iniciarNotificaciones() {
     const registro = await navigator.serviceWorker.ready;
     const messaging = getMessaging(app);
     const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: registro });
-    if (!token) { console.warn("[push] Firebase no entregó un token (revisa la clave VAPID)."); return; }
+    if (!token) {
+      console.warn("[push] Firebase no entregó un token (revisa la clave VAPID).");
+      return marcarEstadoPush("sin_token");
+    }
     await updateDoc(doc(db, "usuarios", miUid), { fcmTokens: arrayUnion(token) });
     onMessage(messaging, (payload) => {
       flash(payload.notification?.title || "Tienes una notificación nueva.");
     });
     console.log("[push] notificaciones activadas correctamente.");
-  } catch (e) { console.error("[push] no se pudo activar notificaciones push:", e); }
+    await marcarEstadoPush("activo");
+  } catch (e) {
+    console.error("[push] no se pudo activar notificaciones push:", e);
+    await marcarEstadoPush("error_" + String(e?.code || e?.message || e).slice(0, 180));
+  }
+}
+
+// ---------------------------------------------------------------------
+// Vista "Asistencia" — cualquiera (jefe o personal) marca dónde está ahora.
+// Se guarda en su propio perfil (usuarios/{uid}.estadoAsistencia) y se ve
+// junto a su nombre en "Equipo".
+// ---------------------------------------------------------------------
+function vistaAsistencia() {
+  const cont = $("vista");
+  const pintar = () => {
+    const actual = miPerfil.estadoAsistencia || "";
+    cont.innerHTML = `
+      <h1>Asistencia</h1>
+      <p class="subtitulo">Marca dónde te encuentras ahora. Tus jefes y administradores lo ven en "Equipo".</p>
+      <div class="asistencia-opciones" id="asistenciaOpciones">
+        ${Object.entries(ESTADOS_ASISTENCIA).map(([clave, info]) => `
+          <button type="button" class="asistencia-opcion ${clave === actual ? "seleccionada" : ""}" data-estado="${clave}">
+            <span class="asistencia-emoji">${info.emoji}</span>
+            <span>${info.etiqueta}</span>
+          </button>`).join("")}
+      </div>
+      <p class="subtitulo" style="margin-top:16px">
+        ${actual ? `Tu estado actual: ${ESTADOS_ASISTENCIA[actual].emoji} ${ESTADOS_ASISTENCIA[actual].etiqueta}` : "Todavía no has marcado tu estado."}
+      </p>`;
+
+    $("asistenciaOpciones").querySelectorAll("[data-estado]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const clave = btn.dataset.estado;
+        try {
+          await updateDoc(doc(db, "usuarios", miUid), { estadoAsistencia: clave, estadoAsistenciaEn: serverTimestamp() });
+          miPerfil.estadoAsistencia = clave;
+          usuariosCache.set(miUid, { ...(usuariosCache.get(miUid) || {}), estadoAsistencia: clave });
+          flash(`Marcado como "${ESTADOS_ASISTENCIA[clave].etiqueta}".`);
+          pintar();
+        } catch (e) { flash("No se pudo guardar tu estado (¿permisos?).", "error"); }
+      });
+    });
+  };
+  pintar();
 }
 
 // ---------------------------------------------------------------------
@@ -535,13 +615,15 @@ async function iniciarNotificaciones() {
 function vistaTodas() {
   const cont = $("vista");
   const uids = misUidsEnAlcance();
+  const presetUid = filtroResponsablePreset && uids.includes(filtroResponsablePreset) ? filtroResponsablePreset : "";
+  filtroResponsablePreset = null; // se usa una sola vez; si entra de nuevo por el menú, arranca sin filtro
   cont.innerHTML = `
     <h1>Todas las tareas</h1>
     <p class="subtitulo">De las personas que gestionas.</p>
     <div class="filtros">
       <select id="filtroResponsable">
-        <option value="">Toda tu gente</option>
-        ${uids.map((u) => `<option value="${u}">${esc(nombreDe(u))}</option>`).join("")}
+        <option value="" ${presetUid === "" ? "selected" : ""}>Toda tu gente</option>
+        ${uids.map((u) => `<option value="${u}" ${u === presetUid ? "selected" : ""}>${esc(nombreDe(u))}</option>`).join("")}
       </select>
       <select id="filtroEstado">
         <option value="">Todos los estados</option>
@@ -693,19 +775,30 @@ function vistaEquipo() {
       const nivel = r.total === 0 ? "baja" : pct >= 70 ? "alta" : pct >= 35 ? "media" : "baja";
       const usr = usuariosCache.get(u) || {};
       const etiquetaRol = usr.rol === "owner" ? "Administrador general" : usr.rol === "admin" ? "Jefe de área" : "Personal";
+      const estadoInfo = ESTADOS_ASISTENCIA[usr.estadoAsistencia];
       return `
-        <div class="kpi-tarjeta kpi-carga-${nivel}">
+        <button type="button" class="kpi-tarjeta kpi-carga-${nivel}" data-uid="${u}" title="Ver todas las tareas de ${esc(usr.nombre || "")}">
           <div class="kpi-tarjeta-cabecera">
             <div class="avatar" style="position:static">${iniciales(usr.nombre)}</div>
-            <div><div class="kpi-nombre">${esc(usr.nombre || "—")}</div><div class="kpi-rol">${etiquetaRol}</div></div>
+            <div>
+              <div class="kpi-nombre">${esc(usr.nombre || "—")}</div>
+              <div class="kpi-rol">${etiquetaRol}</div>
+            </div>
           </div>
+          <div class="kpi-estado ${estadoInfo ? "" : "kpi-estado-vacio"}">${estadoInfo ? `${estadoInfo.emoji} ${estadoInfo.etiqueta}` : "Sin estado marcado"}</div>
           <div class="kpi-barra"><div class="kpi-barra-rellena" style="width:${pct}%"></div></div>
           <div class="kpi-fila"><span>Pendientes</span><b>${r.pendiente}</b></div>
           <div class="kpi-fila"><span>En progreso</span><b>${r.en_progreso}</b></div>
           <div class="kpi-fila"><span>Vencidas</span><b style="${r.vencidas ? "color:var(--rojo)" : ""}">${r.vencidas}</b></div>
-          <div class="kpi-fila"><span>Total asignadas</span><b>${r.total}</b></div>
-        </div>`;
+          <div class="kpi-fila kpi-fila-separada"><span>Total asignadas</span><b>${r.total}</b></div>
+        </button>`;
     }).join("");
+    $("kpiGrid").querySelectorAll("[data-uid]").forEach((el) => {
+      el.addEventListener("click", () => {
+        filtroResponsablePreset = el.dataset.uid;
+        irA("todas");
+      });
+    });
   });
 }
 

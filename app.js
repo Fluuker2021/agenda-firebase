@@ -38,13 +38,25 @@ const ESTADOS_ASISTENCIA = {
 };
 
 // Catálogo de proyectos para elegir al crear/editar una tarea (en vez de
-// escribirlo a mano). Se muestra ordenado alfabéticamente en el selector.
-const PROYECTOS = [
+// escribirlo a mano). Ahora vive en Firestore (colección "proyectos", ver
+// cargarProyectos()) para que el owner los agregue/quite desde
+// Administración; esta lista es solo el "sembrado" inicial que se usa si
+// todavía no has guardado ningún proyecto ahí (para no dejar el selector
+// vacío mientras tanto), y la misma que ofrece el botón "Usar este catálogo"
+// en Administración.
+const PROYECTOS_POR_DEFECTO = [
   "CHINALCO", "HUDBAY", "TÍA MARÍA - COLECTORES", "TÍA MARÍA - SUPRESORES",
   "ANTAMINA", "CERRO VERDE", "VELADERO 1", "VELADERO 2",
   "FAMESA MASA PIROTECNICA", "FAMESA MASA RETARDO", "FAMESA CONECTORES",
   "NEXA", "NORCOBRE", "PROMET", "BUENAVENTURA",
 ].sort((a, b) => a.localeCompare(b, "es"));
+
+// Catálogo "en vivo": lista de nombres a mostrar en los selectores, y mapa
+// nombre -> { permitidos: [uids] } con la info de restricción de cada uno.
+// Se llenan en cargarProyectos() y se refrescan cuando el owner edita algo
+// en Administración.
+let PROYECTOS = [...PROYECTOS_POR_DEFECTO];
+let proyectosInfo = new Map();
 
 // CSV sencillo (soporta campos entre comillas con comas/comillas escapadas)
 // usado por la importación de tareas en la Administración.
@@ -172,6 +184,7 @@ auth.onAuthStateChanged(async (u) => {
   $("avatarUsuario").textContent = iniciales(miPerfil.nombre);
   $("avatarUsuario").title = `${miPerfil.nombre} · ${miPerfil.email || ""}`;
   await cargarUsuarios();
+  await cargarProyectos();
   construirNav();
   iniciarNotificaciones();
   irA("hoy");
@@ -196,6 +209,32 @@ async function cargarUsuarios() {
   }
 }
 function nombreDe(uid) { return usuariosCache.get(uid)?.nombre || "—"; }
+
+// ---------------------------------------------------------------------
+// Caché de proyectos (catálogo + quién tiene acceso especial a cada uno).
+// La regla de Firestore deja leer esta colección a cualquiera que inició
+// sesión, porque la necesitan los selectores de "Nueva tarea" y el filtro
+// de "Todas las tareas". Si todavía no hay ningún proyecto guardado (recién
+// instalaste esta función), se usa el catálogo por defecto mientras tanto.
+// ---------------------------------------------------------------------
+async function cargarProyectos() {
+  try {
+    const snap = await getDocs(collection(db, "proyectos"));
+    proyectosInfo.clear();
+    snap.forEach((d) => proyectosInfo.set(d.id, d.data()));
+    PROYECTOS = proyectosInfo.size
+      ? [...proyectosInfo.keys()].sort((a, b) => a.localeCompare(b, "es"))
+      : [...PROYECTOS_POR_DEFECTO];
+  } catch (e) {
+    // Si la colección todavía no existe o las reglas no se han actualizado,
+    // seguimos con el catálogo por defecto en vez de dejar el selector vacío.
+    PROYECTOS = [...PROYECTOS_POR_DEFECTO];
+  }
+}
+function proyectoRestringido(nombre) {
+  const info = proyectosInfo.get(nombre);
+  return !!(info && Array.isArray(info.permitidos) && info.permitidos.length > 0);
+}
 
 // ---------------------------------------------------------------------
 // Navegación
@@ -255,7 +294,8 @@ function puedoAdministrarTarea(t) {
 }
 
 function tarjetaTareaHTML(t, { mostrarResponsable }) {
-  const meta = [`<span class="badge">${esc(t.proyecto || "Sin proyecto")}</span>`];
+  const restringido = t.proyecto && proyectoRestringido(t.proyecto);
+  const meta = [`<span class="badge">${restringido ? "🔒 " : ""}${esc(t.proyecto || "Sin proyecto")}</span>`];
   if (mostrarResponsable) meta.push(esc(nombreDe(t.responsableUid)));
   meta.push(`prioridad ${t.prioridad}`);
   meta.push(fechaLegible(t.fechaLimite));
@@ -877,6 +917,20 @@ function vistaAdmin() {
     <p class="error" id="nuErr"></p>
     <div id="listaUsuarios"></div>
 
+    <h2 style="margin-top:28px">Proyectos</h2>
+    <p class="subtitulo" style="margin-bottom:10px">
+      Los proyectos que aparecen al crear una tarea. Por defecto, cualquier jefe de área ve las tareas de su gente
+      sin importar el proyecto. Si a uno le das "acceso restringido" (ej. GERENCIA), solo tú y las personas que
+      elijas ahí podrán verlo — ni siquiera el jefe que normalmente gestiona a esa persona, a menos que también lo agregues.
+    </p>
+    <div class="form-inline">
+      <div class="campo"><label>Nuevo proyecto</label><input id="nuProyecto" placeholder="ej. GERENCIA"></div>
+      <button type="button" class="boton-primario" id="btnCrearProyecto">Agregar</button>
+      <button type="button" class="boton-secundario" id="btnSembrarProyectos" hidden>Usar catálogo de 15 proyectos</button>
+    </div>
+    <p class="error" id="pyErr"></p>
+    <div id="listaProyectos"></div>
+
     <div class="importar-caja">
       <h2>Importar tareas (migración desde la agenda anterior)</h2>
       <p class="subtitulo" style="margin-bottom:10px">
@@ -900,6 +954,28 @@ function vistaAdmin() {
       flash("Usuario agregado.");
       $("nuUid").value = ""; $("nuNombre").value = ""; $("nuEmail").value = "";
     } catch (e) { $("nuErr").textContent = "No se pudo guardar (¿permisos?)."; }
+  });
+
+  $("btnCrearProyecto").addEventListener("click", async () => {
+    $("pyErr").textContent = "";
+    const nombre = $("nuProyecto").value.trim().toUpperCase();
+    if (!nombre) { $("pyErr").textContent = "Escribe un nombre de proyecto."; return; }
+    try {
+      await setDoc(doc(db, "proyectos", nombre), { permitidos: [], creadoPorUid: miUid, creadoEn: serverTimestamp() });
+      flash("Proyecto agregado.");
+      $("nuProyecto").value = "";
+    } catch (e) { $("pyErr").textContent = "No se pudo guardar (¿permisos?)."; }
+  });
+
+  $("btnSembrarProyectos").addEventListener("click", async () => {
+    try {
+      const lote = writeBatch(db);
+      for (const nombre of PROYECTOS_POR_DEFECTO) {
+        lote.set(doc(db, "proyectos", nombre), { permitidos: [], creadoPorUid: miUid, creadoEn: serverTimestamp() });
+      }
+      await lote.commit();
+      flash("Se agregó el catálogo de 15 proyectos.");
+    } catch (e) { $("pyErr").textContent = "No se pudo sembrar el catálogo (¿permisos?)."; }
   });
 
   $("btnImportar").addEventListener("click", async () => {
@@ -956,6 +1032,22 @@ function vistaAdmin() {
         <th>Nombre</th><th>Correo</th><th>Rol</th><th>Gestiona a</th><th>Activo</th><th></th>
       </tr></thead><tbody>${usuarios.map((u) => filaUsuarioHTML(u, usuarios)).join("")}</tbody></table></div>`;
     conectarFilaUsuarios();
+  });
+
+  unsubs.adminProyectos = onSnapshot(collection(db, "proyectos"), (snap) => {
+    const nombres = [];
+    proyectosInfo.clear();
+    snap.forEach((d) => { nombres.push(d.id); proyectosInfo.set(d.id, d.data()); });
+    nombres.sort((a, b) => a.localeCompare(b, "es"));
+    // mantenemos también el catálogo "en vivo" que usan los selectores de
+    // Nueva tarea / filtros, al día con lo que se vea aquí
+    PROYECTOS = nombres.length ? nombres : [...PROYECTOS_POR_DEFECTO];
+    $("btnSembrarProyectos").hidden = nombres.length > 0;
+    const todas = [...usuariosCache.values()].filter((u) => u.id !== miUid);
+    $("listaProyectos").innerHTML = nombres.length
+      ? nombres.map((n) => proyectoFilaHTML(n, proyectosInfo.get(n), todas)).join("")
+      : '<p class="vacio">Todavía no has guardado ningún proyecto. Agrega uno, o usa el botón de catálogo de arriba.</p>';
+    conectarFilaProyectos();
   });
 }
 
@@ -1024,6 +1116,52 @@ function conectarFilaUsuarios() {
   $("listaUsuarios").querySelectorAll(".btn-quitar-gestionado").forEach((b) => {
     b.addEventListener("click", async () => {
       try { await updateDoc(doc(db, "usuarios", b.dataset.admin), { gestionados: arrayRemove(b.dataset.gestionado) }); flash("Quitado."); }
+      catch (e) { flash("No se pudo quitar.", "error"); }
+    });
+  });
+}
+
+function proyectoFilaHTML(nombre, info, todasPersonas) {
+  const permitidos = (info && info.permitidos) || [];
+  const restringido = permitidos.length > 0;
+  const disponibles = todasPersonas.filter((o) => !permitidos.includes(o.id));
+  return `
+    <div class="proyecto-fila">
+      <div class="proyecto-fila-cabecera">
+        <strong>${esc(nombre)}</strong>
+        <span class="badge-visibilidad ${restringido ? "restringido" : "abierto"}">${restringido ? `🔒 Restringido a ${permitidos.length} persona${permitidos.length === 1 ? "" : "s"}` : "🌐 Visible para tu equipo"}</span>
+        <button type="button" class="icono-accion btn-quitar-proyecto" data-proyecto="${esc(nombre)}" title="Quitar proyecto">✕</button>
+      </div>
+      <p class="meta-tarea" style="margin:4px 0 6px">Además de ti, ¿quién más puede ver las tareas de este proyecto?</p>
+      <div class="lista-chips">
+        ${permitidos.map((uid) => `<span class="chip-quitable"><span>${esc(nombreDe(uid))}</span><button type="button" class="btn-quitar-permitido" data-proyecto="${esc(nombre)}" data-uid="${uid}">✕</button></span>`).join("") || '<span class="meta-tarea">Nadie más por ahora (solo tú, y quien gestione normalmente a esa persona).</span>'}
+      </div>
+      ${disponibles.length ? `
+        <select class="sel-agregar-permitido" data-proyecto="${esc(nombre)}" style="margin-top:6px">
+          <option value="">+ dar acceso a…</option>
+          ${disponibles.map((o) => `<option value="${o.id}">${esc(o.nombre)}</option>`).join("")}
+        </select>` : ""}
+    </div>`;
+}
+
+function conectarFilaProyectos() {
+  $("listaProyectos").querySelectorAll(".btn-quitar-proyecto").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm(`¿Quitar el proyecto "${b.dataset.proyecto}" del catálogo? Las tareas que ya lo tienen asignado no se borran ni cambian.`)) return;
+      try { await deleteDoc(doc(db, "proyectos", b.dataset.proyecto)); flash("Proyecto quitado."); }
+      catch (e) { flash("No se pudo quitar.", "error"); }
+    });
+  });
+  $("listaProyectos").querySelectorAll(".sel-agregar-permitido").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      if (!sel.value) return;
+      try { await updateDoc(doc(db, "proyectos", sel.dataset.proyecto), { permitidos: arrayUnion(sel.value) }); flash("Acceso agregado."); }
+      catch (e) { flash("No se pudo agregar.", "error"); }
+    });
+  });
+  $("listaProyectos").querySelectorAll(".btn-quitar-permitido").forEach((b) => {
+    b.addEventListener("click", async () => {
+      try { await updateDoc(doc(db, "proyectos", b.dataset.proyecto), { permitidos: arrayRemove(b.dataset.uid) }); flash("Acceso quitado."); }
       catch (e) { flash("No se pudo quitar.", "error"); }
     });
   });

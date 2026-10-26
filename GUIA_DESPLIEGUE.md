@@ -346,6 +346,40 @@ anterior tal cual se borran en este), probablemente sea una lista corta y
 también es totalmente razonable simplemente volver a escribirlas con "Nueva
 tarea".
 
+## Paso 11 — Dominio propio (opcional)
+
+Si quieres que la app se abra desde una dirección propia (ej.
+`agenda-dsm-amc.com`) en vez de `fluuker2021.github.io/agenda-firebase`,
+GitHub Pages lo permite gratis. Hay dos casos:
+
+**A) Ya compraste ese dominio** (en Google Domains, GoDaddy, Namecheap, etc.):
+
+1. Entra al panel de administración de DNS de donde lo compraste y agrega
+   estos registros (el nombre exacto de la pantalla varía según el proveedor,
+   pero todos tienen una sección de "DNS" o "Administrar DNS"):
+   - Si vas a usar el dominio "pelado" (`agenda-dsm-amc.com`, sin `www`):
+     cuatro registros tipo **A** apuntando a estas IPs de GitHub:
+     `185.199.108.153`, `185.199.109.153`, `185.199.110.153`,
+     `185.199.111.153`.
+   - Si prefieres usar `www.agenda-dsm-amc.com`: un registro tipo **CNAME**
+     apuntando a `fluuker2021.github.io`.
+2. En tu repositorio de GitHub: Settings → Pages → "Custom domain" → escribe
+   `agenda-dsm-amc.com` → Save. GitHub crea solo un archivo `CNAME` en tu
+   repositorio (no hace falta que lo subas a mano).
+3. Espera a que el DNS se propague (puede tardar desde minutos hasta algunas
+   horas) y luego marca la casilla **"Enforce HTTPS"** en esa misma pantalla,
+   para que abra con candado de seguridad.
+
+**B) Todavía no lo compraste:** regístralo primero en cualquier proveedor de
+dominios (Namecheap, GoDaddy, Google Domains/Squarespace, etc. — normalmente
+cuesta entre 10 y 20 dólares al año para un `.com`), y luego sigue los pasos
+de arriba.
+
+Una vez configurado, actualiza también el campo `authDomain` en tu
+`firebaseConfig` si algún día quieres que los correos de Firebase Auth usen
+ese dominio — para esta app, que no manda correos de verificación, no es
+necesario tocarlo.
+
 ## Costos esperados
 
 Con Blaze, Firebase cobra solo lo que pasa la capa gratuita mensual, que para

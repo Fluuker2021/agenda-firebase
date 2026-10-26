@@ -50,11 +50,51 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------
+    // proyectos/{nombre} — catálogo de proyectos (Administración → owner).
+    // Cada documento puede tener "permitidos": una lista de uids con acceso
+    // especial a las tareas de ESE proyecto, sin importar a quién gestionen
+    // normalmente (para proyectos confidenciales, ej. "GERENCIA"). Si no
+    // existe el documento, o no tiene "permitidos", o está vacía, el
+    // proyecto es "abierto" y se aplican las reglas normales de siempre.
+    // Cualquiera que inició sesión puede leer el catálogo (lo necesita para
+    // los selectores de la app); solo el owner lo edita.
+    // ---------------------------------------------------------------
+    match /proyectos/{nombre} {
+      allow read: if autenticado();
+      allow write: if esOwner();
+    }
+
+    function proyectoDoc(proyecto) {
+      return get(/databases/$(database)/documents/proyectos/$(proyecto)).data;
+    }
+
+    // true si NO hay restricción especial para ese proyecto: cualquier jefe
+    // que gestione a la persona responsable puede ver/tocar la tarea, como
+    // hasta ahora.
+    function proyectoAbierto(proyecto) {
+      return proyecto == ""
+        || !exists(/databases/$(database)/documents/proyectos/$(proyecto))
+        || !('permitidos' in proyectoDoc(proyecto))
+        || proyectoDoc(proyecto).permitidos.size() == 0;
+    }
+
+    // true si a MÍ puntualmente me agregaron a la lista de "permitidos" de
+    // ese proyecto — acceso extra que no depende de si gestiono o no a la
+    // persona responsable (ej. "otra persona que brinde apoyo").
+    function estoyPermitidoEnProyecto(proyecto) {
+      return proyecto != ""
+        && exists(/databases/$(database)/documents/proyectos/$(proyecto))
+        && 'permitidos' in proyectoDoc(proyecto)
+        && request.auth.uid in proyectoDoc(proyecto).permitidos;
+    }
+
+    // ---------------------------------------------------------------
     // tareas/{id}
-    // Lectura/escritura total: owner, o admin sobre su personal asignado.
-    // El propio responsable (staff) solo puede tocar el estado y las notas
-    // de SUS tareas; prioridad, fecha, proyecto, orden y a quién está
-    // asignada quedan reservados a quien la administra.
+    // Lectura/escritura total: owner, o admin sobre su personal asignado
+    // (salvo que el proyecto esté restringido — ver arriba). El propio
+    // responsable (staff) solo puede tocar el estado y las notas de SUS
+    // tareas; prioridad, fecha, proyecto, orden y a quién está asignada
+    // quedan reservados a quien la administra.
     // ---------------------------------------------------------------
     function soloCamposDeEjecucion() {
       let antes = resource.data;
@@ -72,7 +112,8 @@ service cloud.firestore {
     match /tareas/{id} {
       allow read: if esOwner()
         || esYo(resource.data.responsableUid)
-        || gestiona(resource.data.responsableUid);
+        || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto))
+        || estoyPermitidoEnProyecto(resource.data.proyecto);
 
       allow create: if autenticado()
         && request.resource.data.creadoPorUid == request.auth.uid
@@ -81,17 +122,20 @@ service cloud.firestore {
             || esYo(request.resource.data.responsableUid));
 
       allow update: if esOwner()
-        || (gestiona(resource.data.responsableUid)
+        || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto)
             && (request.resource.data.responsableUid == resource.data.responsableUid
                 || gestiona(request.resource.data.responsableUid)))
-        || (esYo(resource.data.responsableUid) && soloCamposDeEjecucion());
+        || (esYo(resource.data.responsableUid) && soloCamposDeEjecucion())
+        || (estoyPermitidoEnProyecto(resource.data.proyecto) && soloCamposDeEjecucion());
 
       // Incluye esYo(): terminar una tarea la borra (ver convención de la
       // app), y eso lo debe poder hacer el propio responsable, no solo
-      // quien administra.
+      // quien administra. estoyPermitidoEnProyecto también puede, para que
+      // quien brinda apoyo pueda darla por terminada.
       allow delete: if esOwner()
-        || gestiona(resource.data.responsableUid)
-        || esYo(resource.data.responsableUid);
+        || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto))
+        || esYo(resource.data.responsableUid)
+        || estoyPermitidoEnProyecto(resource.data.proyecto);
     }
 
     // ---------------------------------------------------------------

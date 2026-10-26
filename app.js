@@ -658,6 +658,10 @@ function vistaTodas() {
         <option value="" ${presetUid === "" ? "selected" : ""}>Toda tu gente</option>
         ${uids.map((u) => `<option value="${u}" ${u === presetUid ? "selected" : ""}>${esc(nombreDe(u))}</option>`).join("")}
       </select>
+      <select id="filtroProyecto">
+        <option value="">Todos los proyectos</option>
+        ${PROYECTOS.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("")}
+      </select>
       <select id="filtroEstado">
         <option value="">Todos los estados</option>
         <option value="pendiente">Pendiente</option>
@@ -674,10 +678,21 @@ function vistaTodas() {
     const tareas = []; const porId = new Map();
     snap.forEach((d) => { const t = { id: d.id, ...d.data() }; tareas.push(t); porId.set(d.id, t); });
 
+    // Si hay tareas con un proyecto que ya no está en el catálogo (datos
+    // migrados con otro nombre), los agregamos igual como opción de filtro
+    // para poder encontrarlos, sin tocar la lista que ve $("filtroProyecto")
+    // al crear/editar.
+    const proyectosExtra = [...new Set(tareas.map((t) => t.proyecto).filter((p) => p && !PROYECTOS.includes(p)))].sort((a, b) => a.localeCompare(b, "es"));
+    if (proyectosExtra.length && !$("filtroProyecto").dataset.conExtras) {
+      $("filtroProyecto").insertAdjacentHTML("beforeend", proyectosExtra.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join(""));
+      $("filtroProyecto").dataset.conExtras = "1";
+    }
+
     const repintar = () => {
-      const r = $("filtroResponsable").value, e = $("filtroEstado").value;
+      const r = $("filtroResponsable").value, pr = $("filtroProyecto").value, e = $("filtroEstado").value;
       let filtradas = tareas;
       if (r) filtradas = filtradas.filter((t) => t.responsableUid === r);
+      if (pr) filtradas = filtradas.filter((t) => t.proyecto === pr);
       if (e) filtradas = filtradas.filter((t) => t.estado === e);
       const { vencidas, deHoy, proximas, futuras, sinFecha } = agruparPorFecha(filtradas);
       const html = [
@@ -693,6 +708,7 @@ function vistaTodas() {
     };
     repintar();
     $("filtroResponsable").onchange = repintar;
+    $("filtroProyecto").onchange = repintar;
     $("filtroEstado").onchange = repintar;
   });
 }

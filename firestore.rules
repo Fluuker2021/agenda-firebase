@@ -92,21 +92,26 @@ service cloud.firestore {
     // tareas/{id}
     // Lectura/escritura total: owner, o admin sobre su personal asignado
     // (salvo que el proyecto esté restringido — ver arriba). El propio
-    // responsable (staff) solo puede tocar el estado y las notas de SUS
-    // tareas; prioridad, fecha, proyecto, orden y a quién está asignada
-    // quedan reservados a quien la administra.
+    // responsable (staff) puede editar el resto de los datos de SU tarea
+    // (título, proyecto, prioridad, fecha, notas, estado) pero no
+    // reasignarla a otra persona ni tocar quién la creó.
+    //
+    // IMPORTANTE: los campos "orden" y "loteId" NO existen en la mayoría de
+    // las tareas (solo se usan en las que se crean repetidas en lote). Leer
+    // un campo que no existe con la notación "antes.loteId" directamente
+    // ES UN ERROR en las reglas de Firestore (no da "null" como en
+    // JavaScript) y eso ANULABA el permiso silenciosamente — por eso el
+    // personal no podía cambiar el estado de sus tareas. Por eso aquí se usa
+    // antes.get('campo', null) en vez de antes.campo: así, si el campo no
+    // existe, se trata como "null" en lugar de romper la regla entera.
     // ---------------------------------------------------------------
-    function soloCamposDeEjecucion() {
+    function noReasigna() {
       let antes = resource.data;
       let despues = request.resource.data;
-      return despues.responsableUid == antes.responsableUid
-        && despues.proyecto == antes.proyecto
-        && despues.titulo == antes.titulo
-        && despues.prioridad == antes.prioridad
-        && despues.fechaLimite == antes.fechaLimite
-        && despues.orden == antes.orden
-        && despues.loteId == antes.loteId
-        && despues.creadoPorUid == antes.creadoPorUid;
+      return despues.get('responsableUid', null) == antes.get('responsableUid', null)
+        && despues.get('creadoPorUid', null) == antes.get('creadoPorUid', null)
+        && despues.get('orden', null) == antes.get('orden', null)
+        && despues.get('loteId', null) == antes.get('loteId', null);
     }
 
     match /tareas/{id} {
@@ -125,13 +130,13 @@ service cloud.firestore {
         || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto)
             && (request.resource.data.responsableUid == resource.data.responsableUid
                 || gestiona(request.resource.data.responsableUid)))
-        || (esYo(resource.data.responsableUid) && soloCamposDeEjecucion())
-        || (estoyPermitidoEnProyecto(resource.data.proyecto) && soloCamposDeEjecucion());
+        || (esYo(resource.data.responsableUid) && noReasigna())
+        || (estoyPermitidoEnProyecto(resource.data.proyecto) && noReasigna());
 
-      // Incluye esYo(): terminar una tarea la borra (ver convención de la
-      // app), y eso lo debe poder hacer el propio responsable, no solo
-      // quien administra. estoyPermitidoEnProyecto también puede, para que
-      // quien brinda apoyo pueda darla por terminada.
+      // Incluye esYo() y estoyPermitidoEnProyecto(): además de quien
+      // administra, el propio responsable (o quien tenga acceso especial al
+      // proyecto) puede borrar definitivamente una tarea suya ya completada
+      // desde el historial de la app (ver botón "Eliminar" ahí).
       allow delete: if esOwner()
         || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto))
         || esYo(resource.data.responsableUid)

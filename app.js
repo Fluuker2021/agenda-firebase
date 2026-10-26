@@ -293,6 +293,24 @@ function puedoAdministrarTarea(t) {
   return false;
 }
 
+// true si a mí puntualmente me dieron acceso especial a ese proyecto (ver
+// proyectosInfo / proyectoRestringido), sin importar si gestiono o no a la
+// persona responsable de la tarea.
+function tengoAccesoEspecialProyecto(proyecto) {
+  if (!proyecto) return false;
+  const info = proyectosInfo.get(proyecto);
+  return !!(info && Array.isArray(info.permitidos) && info.permitidos.includes(miUid));
+}
+
+// Quién puede editar el resto de los datos de una tarea (título, proyecto,
+// prioridad, fecha, notas, estado): quien la administra, la propia persona
+// responsable (para poder actualizarla aunque no gestione a nadie), o quien
+// tenga acceso especial al proyecto. Nadie de estos puede reasignarla a otra
+// persona salvo quien la administra — ver reglas de Firestore (noReasigna()).
+function puedoEditarTarea(t) {
+  return puedoAdministrarTarea(t) || t.responsableUid === miUid || tengoAccesoEspecialProyecto(t.proyecto);
+}
+
 function tarjetaTareaHTML(t, { mostrarResponsable }) {
   const restringido = t.proyecto && proyectoRestringido(t.proyecto);
   const meta = [`<span class="badge">${restringido ? "🔒 " : ""}${esc(t.proyecto || "Sin proyecto")}</span>`];
@@ -300,6 +318,7 @@ function tarjetaTareaHTML(t, { mostrarResponsable }) {
   meta.push(`prioridad ${t.prioridad}`);
   meta.push(fechaLegible(t.fechaLimite));
   const admin = puedoAdministrarTarea(t);
+  const puedeEditar = puedoEditarTarea(t);
   return `
   <div class="tarjeta-tarea prioridad-${t.prioridad}" data-id="${t.id}">
     <div class="info-tarea">
@@ -308,12 +327,14 @@ function tarjetaTareaHTML(t, { mostrarResponsable }) {
       ${t.descripcion ? `<p class="descripcion-tarea">${esc(t.descripcion)}</p>` : ""}
     </div>
     <div class="acciones-tarea">
-      <select class="selector-estado estado-${t.estado}" data-accion="estado" data-id="${t.id}">
+      <select class="selector-estado estado-${t.estado}" data-accion="estado" data-id="${t.id}" ${puedeEditar ? "" : "disabled"}>
         <option value="pendiente" ${t.estado === "pendiente" ? "selected" : ""}>Pendiente</option>
         <option value="en_progreso" ${t.estado === "en_progreso" ? "selected" : ""}>En progreso</option>
+        <option value="detenido_externo" ${t.estado === "detenido_externo" ? "selected" : ""}>Detenido (otra área)</option>
+        <option value="detenido_dsm" ${t.estado === "detenido_dsm" ? "selected" : ""}>Detenido (DSM)</option>
         <option value="completado" ${t.estado === "completado" ? "selected" : ""}>Completado</option>
       </select>
-      ${admin ? `<button type="button" class="icono-accion" data-accion="editar" data-id="${t.id}" title="Editar">⚙️</button>` : ""}
+      ${puedeEditar ? `<button type="button" class="icono-accion" data-accion="editar" data-id="${t.id}" title="Editar">⚙️</button>` : ""}
       ${admin ? `<button type="button" class="icono-accion" data-accion="eliminar" data-id="${t.id}" title="Eliminar">✕</button>` : ""}
     </div>
   </div>`;
@@ -327,8 +348,8 @@ function conectarAccionesTareas(contenedorEl, tareasPorId) {
       const nuevo = sel.value;
       try {
         if (nuevo === "completado") {
-          await deleteDoc(doc(db, "tareas", id));
-          flash("Tarea completada.");
+          await updateDoc(doc(db, "tareas", id), { estado: nuevo, completadoEn: serverTimestamp(), actualizadoEn: serverTimestamp() });
+          flash("Tarea completada. Queda guardada en el historial de abajo.");
         } else {
           await updateDoc(doc(db, "tareas", id), { estado: nuevo, actualizadoEn: serverTimestamp() });
         }
@@ -352,7 +373,10 @@ function conectarAccionesTareas(contenedorEl, tareasPorId) {
   });
 }
 
-function agruparPorFecha(tareas) {
+// Las tareas completadas ya no se borran (ver historial más abajo): hay que
+// dejarlas afuera de las listas normales por fecha a propósito.
+function agruparPorFecha(tareasConTodo) {
+  const tareas = tareasConTodo.filter((t) => t.estado !== "completado");
   const hoy = hoyStr();
   const vencidas = [], deHoy = [], proximas = [], futuras = [], sinFecha = [];
   const limite = sumarDias(hoy, 7);
@@ -367,21 +391,64 @@ function agruparPorFecha(tareas) {
   return { vencidas: ordenar(vencidas), deHoy: ordenar(deHoy), proximas: ordenar(proximas), futuras: ordenar(futuras), sinFecha: ordenar(sinFecha) };
 }
 
+// ---------------------------------------------------------------------
+// Historial de completadas — tarjeta de solo lectura (sin selector de
+// estado) con un botón para borrarla definitivamente si ya no hace falta.
+// ---------------------------------------------------------------------
+function fechaCompletado(t) {
+  const ts = t.completadoEn;
+  if (!ts) return "";
+  const d = typeof ts.toDate === "function" ? ts.toDate() : null;
+  if (!d) return "";
+  return d.toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function filaHistorialHTML(t, mostrarResponsable) {
+  const meta = [`<span class="badge">${esc(t.proyecto || "Sin proyecto")}</span>`];
+  if (mostrarResponsable) meta.push(esc(nombreDe(t.responsableUid)));
+  const cuando = fechaCompletado(t);
+  if (cuando) meta.push(`completada el ${cuando}`);
+  const puedeBorrar = puedoEditarTarea(t) || puedoAdministrarTarea(t);
+  return `
+  <div class="tarjeta-tarea tarjeta-historial" data-id="${t.id}">
+    <div class="info-tarea">
+      <p class="titulo-tarea">${esc(t.titulo)}</p>
+      <p class="meta-tarea">${meta.join(" · ")}</p>
+    </div>
+    <div class="acciones-tarea">
+      ${puedeBorrar ? `<button type="button" class="icono-accion" data-accion="borrar-historial" data-id="${t.id}" title="Eliminar definitivamente">✕</button>` : ""}
+    </div>
+  </div>`;
+}
+
+function conectarHistorial(contenedorEl, tareasPorId) {
+  contenedorEl.querySelectorAll('[data-accion="borrar-historial"]').forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm("¿Eliminar esta tarea completada del historial? No se puede deshacer.")) return;
+      try { await deleteDoc(doc(db, "tareas", b.dataset.id)); flash("Eliminada del historial."); }
+      catch (e) { flash("No se pudo eliminar (¿permisos?).", "error"); }
+    });
+  });
+}
+
 // ids de secciones que la persona cerró a mano — se recuerda mientras dura
 // la sesión (sobrevive a los refrescos en tiempo real de onSnapshot, que si
 // no, las volverían a abrir solas en cada cambio).
-const seccionesColapsadas = new Set();
+// El historial de completadas arranca cerrado por defecto para no saturar
+// la vista; el resto de secciones arrancan abiertas, como hasta ahora.
+const seccionesColapsadas = new Set(["secCompletadas", "tCompletadas"]);
 
-function seccionHTML(id, titulo, emoji, lista, mostrarResponsable) {
+function seccionHTML(id, titulo, emoji, lista, mostrarResponsable, renderizador) {
   if (lista.length === 0) return "";
   const cerrada = seccionesColapsadas.has(id);
+  const pintarFila = renderizador || ((t) => tarjetaTareaHTML(t, { mostrarResponsable }));
   return `
   <div class="seccion">
     <button type="button" class="seccion-titulo" data-toggle="${id}">
       <span class="seccion-flecha${cerrada ? " cerrada" : ""}">▾</span>
       ${emoji} ${titulo} <span class="contador">(${lista.length})</span>
     </button>
-    <div id="${id}" class="seccion-lista${cerrada ? " oculta" : ""}">${lista.map((t) => tarjetaTareaHTML(t, { mostrarResponsable })).join("")}</div>
+    <div id="${id}" class="seccion-lista${cerrada ? " oculta" : ""}">${lista.map((t) => pintarFila(t)).join("")}</div>
   </div>`;
 }
 
@@ -415,20 +482,26 @@ function vistaHoy() {
   unsubs.hoy = onSnapshot(q, (snap) => {
     const tareas = []; const porId = new Map();
     snap.forEach((d) => { const t = { id: d.id, ...d.data() }; tareas.push(t); porId.set(d.id, t); });
+    const activas = tareas.filter((t) => t.estado !== "completado");
     const { vencidas, deHoy, proximas, futuras, sinFecha } = agruparPorFecha(tareas);
+    const completadas = tareas.filter((t) => t.estado === "completado")
+      .sort((a, b) => (b.completadoEn?.toDate?.() ?? 0) - (a.completadoEn?.toDate?.() ?? 0))
+      .slice(0, 50);
     $("hoyResumen").innerHTML = `
       <div class="chip"><strong>${vencidas.length}</strong> vencidas</div>
       <div class="chip"><strong>${deHoy.length}</strong> para hoy</div>
-      <div class="chip"><strong>${tareas.length}</strong> pendientes en total</div>`;
+      <div class="chip"><strong>${activas.length}</strong> pendientes en total</div>`;
     const html = [
       seccionHTML("secVencidas", "Vencidas", "🔴", vencidas, false),
       seccionHTML("secHoy", "Para hoy", "🟢", deHoy, false),
       seccionHTML("secProximas", "Próximos 7 días", "📅", proximas, false),
       seccionHTML("secFuturas", "Más adelante", "🗓️", futuras, false),
       seccionHTML("secSinFecha", "Sin fecha", "📋", sinFecha, false),
+      seccionHTML("secCompletadas", "Historial de completadas", "✅", completadas, false, (t) => filaHistorialHTML(t, false)),
     ].join("");
     $("hoyListas").innerHTML = html || '<p class="vacio">No tienes tareas pendientes. 🎉</p>';
     conectarAccionesTareas($("hoyListas"), porId);
+    conectarHistorial($("hoyListas"), porId);
     conectarSecciones($("hoyListas"));
   });
 }
@@ -438,10 +511,14 @@ function vistaHoy() {
 // ---------------------------------------------------------------------
 let tareaEditando = null;
 
-function poblarSelectResponsable(uidSeleccionado) {
+// forzarIncluirUid: cuando se edita una tarea que no se puede reasignar
+// (ver abrirModalTarea), hay que mostrar a la persona responsable aunque no
+// esté dentro de "a quién gestiono", para no perder ese dato en el selector.
+function poblarSelectResponsable(uidSeleccionado, forzarIncluirUid) {
   const sel = $("tResponsable");
   const uids = misUidsEnAlcance();
-  sel.innerHTML = uids.map((uid) =>
+  const lista = forzarIncluirUid && !uids.includes(forzarIncluirUid) ? [forzarIncluirUid, ...uids] : uids;
+  sel.innerHTML = lista.map((uid) =>
     `<option value="${uid}" ${uid === uidSeleccionado ? "selected" : ""}>${esc(nombreDe(uid))}${uid === miUid ? " (yo)" : ""}</option>`
   ).join("");
 }
@@ -465,7 +542,14 @@ function abrirModalTarea(t) {
   $("tTareaId").value = t?.id || "";
   poblarSelectProyecto(t?.proyecto || "");
   $("tTitulo").value = t?.titulo || "";
-  poblarSelectResponsable(t?.responsableUid || miUid);
+  // Quien solo puede editar por ser el propio responsable, o por tener
+  // acceso especial al proyecto (sin administrar a esa persona), puede
+  // actualizar el resto de los datos pero NO reasignar la tarea a alguien
+  // más — eso coincide con lo que permiten las reglas de Firestore.
+  const puedeReasignar = !t || puedoAdministrarTarea(t);
+  poblarSelectResponsable(t?.responsableUid || miUid, puedeReasignar ? null : t.responsableUid);
+  $("tResponsable").disabled = !puedeReasignar;
+  $("tResponsableHint").hidden = puedeReasignar;
   $("tPrioridad").value = t?.prioridad || "media";
   $("tFecha").value = t?.fechaLimite || "";
   $("tNotas").value = t?.descripcion || "";
@@ -490,13 +574,16 @@ $("formTarea").addEventListener("submit", async (e) => {
   const datos = {
     proyecto: $("tProyecto").value.trim(),
     titulo: $("tTitulo").value.trim(),
-    responsableUid: $("tResponsable").value,
+    // Si el selector está bloqueado (ver abrirModalTarea), se usa el valor
+    // original de la tarea en vez del contenido del select, como refuerzo
+    // además de las reglas de Firestore (que igual lo rechazarían).
+    responsableUid: $("tResponsable").disabled ? tareaEditando.responsableUid : $("tResponsable").value,
     prioridad: $("tPrioridad").value,
     fechaLimite: $("tFecha").value || null,
     descripcion: $("tNotas").value.trim(),
   };
   if (!datos.titulo) { $("tErr").textContent = "Escribe un título."; return; }
-  if (!misUidsEnAlcance().includes(datos.responsableUid)) {
+  if (!$("tResponsable").disabled && !misUidsEnAlcance().includes(datos.responsableUid)) {
     $("tErr").textContent = "No puedes asignar tareas a esa persona.";
     return;
   }
@@ -706,6 +793,8 @@ function vistaTodas() {
         <option value="">Todos los estados</option>
         <option value="pendiente">Pendiente</option>
         <option value="en_progreso">En progreso</option>
+        <option value="detenido_externo">Detenido (otra área)</option>
+        <option value="detenido_dsm">Detenido (DSM)</option>
       </select>
     </div>
     <div id="todasListas"></div>`;
@@ -730,20 +819,26 @@ function vistaTodas() {
 
     const repintar = () => {
       const r = $("filtroResponsable").value, pr = $("filtroProyecto").value, e = $("filtroEstado").value;
-      let filtradas = tareas;
-      if (r) filtradas = filtradas.filter((t) => t.responsableUid === r);
-      if (pr) filtradas = filtradas.filter((t) => t.proyecto === pr);
+      let base = tareas;
+      if (r) base = base.filter((t) => t.responsableUid === r);
+      if (pr) base = base.filter((t) => t.proyecto === pr);
+      let filtradas = base;
       if (e) filtradas = filtradas.filter((t) => t.estado === e);
       const { vencidas, deHoy, proximas, futuras, sinFecha } = agruparPorFecha(filtradas);
+      const completadas = base.filter((t) => t.estado === "completado")
+        .sort((a, b) => (b.completadoEn?.toDate?.() ?? 0) - (a.completadoEn?.toDate?.() ?? 0))
+        .slice(0, 50);
       const html = [
         seccionHTML("tVencidas", "Vencidas", "🔴", vencidas, true),
         seccionHTML("tHoy", "Para hoy", "🟢", deHoy, true),
         seccionHTML("tProximas", "Próximos 7 días", "📅", proximas, true),
         seccionHTML("tFuturas", "Más adelante", "🗓️", futuras, true),
         seccionHTML("tSinFecha", "Sin fecha", "📋", sinFecha, true),
+        seccionHTML("tCompletadas", "Historial de completadas", "✅", completadas, true, (t) => filaHistorialHTML(t, true)),
       ].join("");
       $("todasListas").innerHTML = html || '<p class="vacio">No hay tareas con ese filtro.</p>';
       conectarAccionesTareas($("todasListas"), porId);
+      conectarHistorial($("todasListas"), porId);
       conectarSecciones($("todasListas"));
     };
     repintar();
@@ -783,7 +878,9 @@ function vistaCalendario() {
     : query(collection(db, "tareas"), where("responsableUid", "in", uids));
   unsubs.calendario = onSnapshot(q, (snap) => {
     calTareas = [];
-    snap.forEach((d) => calTareas.push({ id: d.id, ...d.data() }));
+    // las completadas ya no se borran, pero el calendario solo muestra carga
+    // de trabajo pendiente/activa — su historial está en Hoy/Todas.
+    snap.forEach((d) => { const t = { id: d.id, ...d.data() }; if (t.estado !== "completado") calTareas.push(t); });
     dibujarCalendario();
   });
 }
@@ -848,13 +945,16 @@ function vistaEquipo() {
     const tareas = [];
     snap.forEach((d) => tareas.push({ id: d.id, ...d.data() }));
     const hoy = hoyStr();
-    const porPersona = new Map(uids.map((u) => [u, { pendiente: 0, en_progreso: 0, vencidas: 0, total: 0 }]));
+    const porPersona = new Map(uids.map((u) => [u, { pendiente: 0, en_progreso: 0, vencidas: 0, total: 0, detenido_externo: 0, detenido_dsm: 0 }]));
     for (const t of tareas) {
+      if (t.estado === "completado") continue; // ya no cuenta carga activa; ver historial
       const r = porPersona.get(t.responsableUid);
       if (!r) continue;
       r.total++;
       if (t.estado === "pendiente") r.pendiente++;
       if (t.estado === "en_progreso") r.en_progreso++;
+      if (t.estado === "detenido_externo") r.detenido_externo++;
+      if (t.estado === "detenido_dsm") r.detenido_dsm++;
       if (t.fechaLimite && t.fechaLimite < hoy) r.vencidas++;
     }
     const maxCarga = Math.max(1, ...[...porPersona.values()].map((r) => r.total));
@@ -879,6 +979,8 @@ function vistaEquipo() {
           <div class="kpi-fila"><span>Pendientes</span><b>${r.pendiente}</b></div>
           <div class="kpi-fila"><span>En progreso</span><b>${r.en_progreso}</b></div>
           <div class="kpi-fila"><span>Vencidas</span><b style="${r.vencidas ? "color:var(--rojo)" : ""}">${r.vencidas}</b></div>
+          ${r.detenido_externo ? `<div class="kpi-fila"><span>Detenido (otra área)</span><b>${r.detenido_externo}</b></div>` : ""}
+          ${r.detenido_dsm ? `<div class="kpi-fila kpi-fila-alerta"><span>⚠️ Detenido (DSM)</span><b>${r.detenido_dsm}</b></div>` : ""}
           <div class="kpi-fila kpi-fila-separada"><span>Total asignadas</span><b>${r.total}</b></div>
         </button>`;
     }).join("");

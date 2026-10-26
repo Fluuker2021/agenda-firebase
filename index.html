@@ -16,12 +16,12 @@
 :root{
   --fondo:#f6f7f9; --tarjeta:#ffffff; --texto:#1f2430; --texto-suave:#6b7280; --borde:#e5e7eb;
   --azul:#2563eb; --azul-suave:#eff4ff; --rojo:#dc2626; --rojo-suave:#fee2e2; --naranja:#d97706; --naranja-suave:#fef3e2;
-  --verde:#16a34a; --verde-suave:#dcfce7; --gris:#9ca3af; --sombra:0 10px 30px rgba(15,23,42,.1);
+  --verde:#16a34a; --verde-suave:#dcfce7; --gris:#9ca3af; --gris-suave:#eef0f3; --morado:#7c3aed; --morado-suave:#ede9fe; --sombra:0 10px 30px rgba(15,23,42,.1);
 }
 @media (prefers-color-scheme: dark){:root{
   --fondo:#11161d; --tarjeta:#1a2029; --texto:#eef1f5; --texto-suave:#9aa4b2; --borde:#2a3240;
   --azul:#5b8def; --azul-suave:#172238; --rojo:#f36b63; --rojo-suave:#3a1b1b; --naranja:#e5a94f; --naranja-suave:#3a2e15;
-  --verde:#4ade80; --verde-suave:#163524; --gris:#6b7280; --sombra:0 10px 30px rgba(0,0,0,.4);
+  --verde:#4ade80; --verde-suave:#163524; --gris:#6b7280; --gris-suave:#232a35; --morado:#a78bfa; --morado-suave:#2c2447; --sombra:0 10px 30px rgba(0,0,0,.4);
 }}
 *{box-sizing:border-box}
 html,body{margin:0}
@@ -86,9 +86,14 @@ h2{font-size:1.05rem;margin:0 0 10px}
 .descripcion-tarea{font-size:.85rem;color:var(--texto-suave);margin:6px 0 0}
 .acciones-tarea{display:flex;align-items:center;gap:6px;flex-shrink:0}
 select.selector-estado{border:none;background:var(--fondo);border-radius:7px;padding:7px 9px;font-size:.8rem;font-weight:600;color:var(--texto)}
+select.selector-estado:disabled{opacity:.6;cursor:not-allowed}
 select.selector-estado.estado-en_progreso{background:var(--naranja-suave);color:var(--naranja)}
 select.selector-estado.estado-completado{background:var(--verde-suave);color:var(--verde)}
+select.selector-estado.estado-detenido_externo{background:var(--gris-suave);color:var(--texto-suave)}
+select.selector-estado.estado-detenido_dsm{background:var(--rojo-suave);color:var(--rojo)}
 .icono-accion{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--borde);background:var(--tarjeta);border-radius:7px;font-size:.95rem}
+.tarjeta-historial{opacity:.85}
+.tarjeta-historial .titulo-tarea{text-decoration:line-through;text-decoration-color:var(--texto-suave)}
 
 .boton-primario{background:var(--azul);color:#fff;border:none;padding:10px 16px;border-radius:8px;font-size:.9rem;font-weight:600}
 .boton-secundario{background:var(--fondo);border:1px solid var(--borde);color:var(--texto);padding:9px 14px;border-radius:8px;font-size:.85rem}
@@ -118,6 +123,7 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 .modal-botones{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
 .opcion-checkbox{display:flex;align-items:center;gap:8px;font-weight:400}
 .opcion-checkbox input{width:auto}
+.nota-campo{font-size:.78rem;color:var(--texto-suave);margin:6px 0 0}
 
 /* ---------- mensajes flash ---------- */
 .mensajes{position:fixed;top:calc(env(safe-area-inset-top,0) + 10px);left:50%;transform:translateX(-50%);z-index:2000;display:flex;flex-direction:column;gap:6px;width:min(92vw,420px)}
@@ -160,6 +166,8 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 .kpi-fila{display:flex;justify-content:space-between;font-size:.78rem;color:var(--texto-suave);margin-bottom:3px}
 .kpi-fila b{color:var(--texto)}
 .kpi-fila-separada{border-top:1px solid var(--borde);margin-top:6px;padding-top:7px}
+.kpi-fila-alerta{color:var(--rojo);font-weight:700}
+.kpi-fila-alerta b{color:var(--rojo)}
 .kpi-carga-alta .kpi-barra-rellena{background:var(--rojo)}
 .kpi-carga-media .kpi-barra-rellena{background:var(--naranja)}
 .kpi-carga-baja .kpi-barra-rellena{background:var(--verde)}
@@ -253,6 +261,7 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
       <div class="campo">
         <label for="tResponsable">Responsable</label>
         <select id="tResponsable" required></select>
+        <p class="nota-campo" id="tResponsableHint" hidden>No puedes reasignar esta tarea a otra persona.</p>
       </div>
       <div class="fila-campos">
         <div class="campo">

@@ -433,9 +433,14 @@ Firebase.
      - Si el campo `pushEstado` no existe directamente, es que esa persona
        todavía no ha vuelto a entrar desde que subiste la versión más
        reciente de la app.
-- **"No se pudo guardar (¿permisos?)"** al crear o editar algo: casi siempre es
-  que la persona está intentando algo fuera de su alcance (ej. un jefe de área
-  asignando una tarea a alguien que no gestiona) — es la regla de seguridad
-  funcionando como debe.
+- **"No se pudo actualizar (¿permisos?)"** al cambiar el estado de una tarea, o
+  **"No se pudo guardar (¿permisos?)"** al editarla: si esto le pasa al propio
+  personal con SUS PROPIAS tareas (no a alguien tocando tareas ajenas), revisa
+  que hayas publicado la versión más reciente de `firestore.rules` —
+  `firebase deploy --only firestore:rules` (Paso 4.9) —, ya que una versión
+  anterior tenía un error que bloqueaba esto por accidente. Si en cambio es un
+  jefe de área intentando algo fuera de su alcance (ej. asignar una tarea a
+  alguien que no gestiona, o reasignarla a otra persona), es la regla de
+  seguridad funcionando como debe.
 - Para revisar errores más a fondo, en Firebase Console → Functions puedes ver
   los registros ("Logs") de cada vez que se disparó una notificación.

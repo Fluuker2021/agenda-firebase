@@ -37,6 +37,15 @@ const ESTADOS_ASISTENCIA = {
   ausente: { emoji: "🔴", etiqueta: "Ausente" },
 };
 
+// Catálogo de proyectos para elegir al crear/editar una tarea (en vez de
+// escribirlo a mano). Se muestra ordenado alfabéticamente en el selector.
+const PROYECTOS = [
+  "CHINALCO", "HUDBAY", "TÍA MARÍA - COLECTORES", "TÍA MARÍA - SUPRESORES",
+  "ANTAMINA", "CERRO VERDE", "VELADERO 1", "VELADERO 2",
+  "FAMESA MASA PIROTECNICA", "FAMESA MASA RETARDO", "FAMESA CONECTORES",
+  "NEXA", "NORCOBRE", "PROMET", "BUENAVENTURA",
+].sort((a, b) => a.localeCompare(b, "es"));
+
 // CSV sencillo (soporta campos entre comillas con comas/comillas escapadas)
 // usado por la importación de tareas en la Administración.
 function parsearCSV(texto) {
@@ -397,13 +406,24 @@ function poblarSelectResponsable(uidSeleccionado) {
   ).join("");
 }
 
+// Si la tarea que se está editando tiene un proyecto que ya no está en el
+// catálogo (ej. datos migrados de la agenda anterior con otro nombre), lo
+// agregamos igual como opción para no perder ni cambiar ese dato sin querer.
+function poblarSelectProyecto(proyectoActual) {
+  const sel = $("tProyecto");
+  const extra = proyectoActual && !PROYECTOS.includes(proyectoActual) ? [proyectoActual] : [];
+  const opciones = [...extra, ...PROYECTOS];
+  sel.innerHTML = `<option value="">Sin proyecto</option>` +
+    opciones.map((p) => `<option value="${esc(p)}" ${p === proyectoActual ? "selected" : ""}>${esc(p)}</option>`).join("");
+}
+
 function abrirModalTarea(t) {
   tareaEditando = t || null;
   $("tErr").textContent = "";
   $("formTarea").reset();
   $("modalTareaTitulo").textContent = t ? "Editar tarea" : "Nueva tarea";
   $("tTareaId").value = t?.id || "";
-  $("tProyecto").value = t?.proyecto || "";
+  poblarSelectProyecto(t?.proyecto || "");
   $("tTitulo").value = t?.titulo || "";
   poblarSelectResponsable(t?.responsableUid || miUid);
   $("tPrioridad").value = t?.prioridad || "media";

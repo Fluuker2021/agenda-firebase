@@ -136,6 +136,13 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
 @media (max-width:640px){
   .topbar{padding:8px 12px}
   .acciones-tarea .icono-accion{width:38px;height:38px}
+  /* En pantallas angostas, los botones de estado/editar/eliminar ya no caben
+     al costado del título sin aplastarlo. Se pasan arriba, en una fila propia
+     de ancho completo, y el título/descripción quedan abajo con todo el
+     ancho de la tarjeta para leerse bien. */
+  .tarjeta-tarea{flex-direction:column;align-items:stretch}
+  .acciones-tarea{order:-1;width:100%}
+  .acciones-tarea select.selector-estado{flex:1;min-width:0}
 }
 
 /* ---------- calendario ---------- */

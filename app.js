@@ -515,6 +515,7 @@ function activarArrastre(contenedorEl, tareasPorId) {
         lista.removeEventListener("pointerup", soltar);
         lista.removeEventListener("pointercancel", soltar);
         tarjeta.classList.remove("arrastrando");
+        document.body.classList.remove("arrastrando-activo");
         activo = false;
         const ids = [...lista.querySelectorAll(".tarjeta-tarea")].map((el) => el.dataset.id);
         try {
@@ -540,6 +541,7 @@ function activarArrastre(contenedorEl, tareasPorId) {
           temporizador = null;
           activo = true;
           tarjeta.classList.add("arrastrando");
+          document.body.classList.add("arrastrando-activo");
           if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* no crítico */ } }
           // Importante: la captura del puntero se pide sobre "lista" (que
           // nunca se mueve en el DOM) y no sobre "tarjeta": al reordenar, la
@@ -574,7 +576,7 @@ function activarArrastre(contenedorEl, tareasPorId) {
 // ---------------------------------------------------------------------
 function vistaHoy() {
   const cont = $("vista");
-  cont.innerHTML = `<h1>Tu agenda de hoy</h1><p class="subtitulo">${fechaLarga()}</p><div id="hoyResumen" class="resumen"></div><p class="nota-campo">💡 Mantén presionada una tarea unos segundos para arrastrarla y cambiar su orden dentro del grupo.</p><div id="hoyListas"></div>`;
+  cont.innerHTML = `<h1>Tu agenda de hoy</h1><p class="subtitulo">${fechaLarga()}</p><div id="hoyResumen" class="resumen"></div><div id="hoyListas"></div>`;
   const q = query(collection(db, "tareas"), where("responsableUid", "==", miUid));
   unsubs.hoy = onSnapshot(q, (snap) => {
     const tareas = []; const porId = new Map();

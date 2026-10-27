@@ -496,6 +496,12 @@ function activarArrastre(contenedorEl, tareasPorId) {
       let activo = false;
       let origenX = 0, origenY = 0;
 
+      // Refuerzo, además del CSS (user-select:none): algunos navegadores
+      // igual disparan el inicio de una selección de texto al mantener
+      // presionado, así que se cancela también a nivel de evento.
+      tarjeta.addEventListener("selectstart", (ev) => ev.preventDefault());
+      tarjeta.addEventListener("contextmenu", (ev) => { if (activo) ev.preventDefault(); });
+
       const cancelarEspera = () => { if (temporizador) { clearTimeout(temporizador); temporizador = null; } };
 
       const mover = (ev2) => {

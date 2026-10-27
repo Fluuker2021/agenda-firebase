@@ -92,6 +92,8 @@ select.selector-estado.estado-completado{background:var(--verde-suave);color:var
 select.selector-estado.estado-detenido_externo{background:var(--gris-suave);color:var(--texto-suave)}
 select.selector-estado.estado-detenido_dsm{background:var(--rojo-suave);color:var(--rojo)}
 .icono-accion{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--borde);background:var(--tarjeta);border-radius:7px;font-size:.95rem}
+.tarjeta-tarea[data-se-puede-arrastrar="1"]{touch-action:pan-y}
+.tarjeta-tarea.arrastrando{box-shadow:var(--sombra);opacity:.92;position:relative;z-index:5;cursor:grabbing;touch-action:none;user-select:none;-webkit-user-select:none}
 .tarjeta-historial{opacity:.85}
 .tarjeta-historial .titulo-tarea{text-decoration:line-through;text-decoration-color:var(--texto-suave)}
 
@@ -330,6 +332,7 @@ table.tabla tr.fila-alerta td.col-vencidas{color:var(--rojo);font-weight:700}
    Pega aquí tu firebaseConfig (Firebase Console → Configuración del
    proyecto → Tus apps → ícono Web) y tu clave VAPID (Cloud Messaging →
    Generar par de claves), tal como se explica en la guía. */
+
 const firebaseConfig = {
   apiKey: "AIzaSyDVa8QNEY7wQNwkmit_NrmksQkfm-k6jYs",
   authDomain: "agenda-trabajo-75f2f.firebaseapp.com",

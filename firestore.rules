@@ -97,20 +97,25 @@ service cloud.firestore {
     // reasignarla a otra persona ni tocar quién la creó.
     //
     // IMPORTANTE: los campos "orden" y "loteId" NO existen en la mayoría de
-    // las tareas (solo se usan en las que se crean repetidas en lote). Leer
-    // un campo que no existe con la notación "antes.loteId" directamente
-    // ES UN ERROR en las reglas de Firestore (no da "null" como en
-    // JavaScript) y eso ANULABA el permiso silenciosamente — por eso el
-    // personal no podía cambiar el estado de sus tareas. Por eso aquí se usa
-    // antes.get('campo', null) en vez de antes.campo: así, si el campo no
-    // existe, se trata como "null" en lugar de romper la regla entera.
+    // las tareas (solo se usan en las que se crean repetidas en lote, o una
+    // vez que alguien las reordena a mano). Leer un campo que no existe con
+    // la notación "antes.loteId" directamente ES UN ERROR en las reglas de
+    // Firestore (no da "null" como en JavaScript) y eso ANULABA el permiso
+    // silenciosamente — por eso el personal no podía cambiar el estado de
+    // sus tareas. Por eso aquí se usa antes.get('campo', null) en vez de
+    // antes.campo: así, si el campo no existe, se trata como "null" en vez
+    // de romper la regla entera.
+    //
+    // "orden" SÍ se puede cambiar libremente (no está protegido aquí): es lo
+    // que usa la app para que cada quien reordene a su gusto, arrastrando,
+    // las tareas de su propia lista de "Hoy". "loteId" en cambio queda
+    // protegido: no debe cambiar a qué serie en lote pertenece una tarea.
     // ---------------------------------------------------------------
     function noReasigna() {
       let antes = resource.data;
       let despues = request.resource.data;
       return despues.get('responsableUid', null) == antes.get('responsableUid', null)
         && despues.get('creadoPorUid', null) == antes.get('creadoPorUid', null)
-        && despues.get('orden', null) == antes.get('orden', null)
         && despues.get('loteId', null) == antes.get('loteId', null);
     }
 

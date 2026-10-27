@@ -22,6 +22,7 @@ const firebaseConfig = {
   storageBucket: "agenda-trabajo-75f2f.firebasestorage.app",
   messagingSenderId: "860734172074",
   appId: "1:860734172074:web:e9110f67e3f1089a16d9d3"
+
 };
 /* ======================================================================= */
 

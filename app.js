@@ -311,7 +311,7 @@ function puedoEditarTarea(t) {
   return puedoAdministrarTarea(t) || t.responsableUid === miUid || tengoAccesoEspecialProyecto(t.proyecto);
 }
 
-function tarjetaTareaHTML(t, { mostrarResponsable }) {
+function tarjetaTareaHTML(t, { mostrarResponsable, conArrastre }) {
   const restringido = t.proyecto && proyectoRestringido(t.proyecto);
   const meta = [`<span class="badge">${restringido ? "🔒 " : ""}${esc(t.proyecto || "Sin proyecto")}</span>`];
   if (mostrarResponsable) meta.push(esc(nombreDe(t.responsableUid)));
@@ -319,8 +319,9 @@ function tarjetaTareaHTML(t, { mostrarResponsable }) {
   meta.push(fechaLegible(t.fechaLimite));
   const admin = puedoAdministrarTarea(t);
   const puedeEditar = puedoEditarTarea(t);
+  const puedeArrastrar = !!conArrastre && puedeEditar;
   return `
-  <div class="tarjeta-tarea prioridad-${t.prioridad}" data-id="${t.id}">
+  <div class="tarjeta-tarea prioridad-${t.prioridad}" data-id="${t.id}" ${puedeArrastrar ? 'data-se-puede-arrastrar="1"' : ""}>
     <div class="info-tarea">
       <p class="titulo-tarea">${esc(t.titulo)}</p>
       <p class="meta-tarea">${meta.join(" · ")}</p>
@@ -438,17 +439,17 @@ function conectarHistorial(contenedorEl, tareasPorId) {
 // la vista; el resto de secciones arrancan abiertas, como hasta ahora.
 const seccionesColapsadas = new Set(["secCompletadas", "tCompletadas"]);
 
-function seccionHTML(id, titulo, emoji, lista, mostrarResponsable, renderizador) {
+function seccionHTML(id, titulo, emoji, lista, mostrarResponsable, renderizador, arrastrable) {
   if (lista.length === 0) return "";
   const cerrada = seccionesColapsadas.has(id);
-  const pintarFila = renderizador || ((t) => tarjetaTareaHTML(t, { mostrarResponsable }));
+  const pintarFila = renderizador || ((t) => tarjetaTareaHTML(t, { mostrarResponsable, conArrastre: !!arrastrable }));
   return `
   <div class="seccion">
     <button type="button" class="seccion-titulo" data-toggle="${id}">
       <span class="seccion-flecha${cerrada ? " cerrada" : ""}">▾</span>
       ${emoji} ${titulo} <span class="contador">(${lista.length})</span>
     </button>
-    <div id="${id}" class="seccion-lista${cerrada ? " oculta" : ""}">${lista.map((t) => pintarFila(t)).join("")}</div>
+    <div id="${id}" class="seccion-lista${cerrada ? " oculta" : ""}"${arrastrable ? ' data-arrastrable="1"' : ""}>${lista.map((t) => pintarFila(t)).join("")}</div>
   </div>`;
 }
 
@@ -473,11 +474,107 @@ function conectarSecciones(contenedorEl) {
 }
 
 // ---------------------------------------------------------------------
+// Arrastrar para reordenar — cada quien puede acomodar a su gusto el orden
+// de las tareas dentro de un mismo grupo (ej. las 4 "Vencidas"). No hace
+// falta ningún botón aparte: se mantiene presionado cualquier espacio de la
+// tarjeta (menos los botones/selector de la derecha, que deben seguir
+// respondiendo al toque normal) y, pasado un pequeño instante sin soltar,
+// se activa el arrastre. Si en vez de eso la persona solo estaba
+// deslizando para hacer scroll de la pantalla, se detecta el movimiento
+// antes de que se cumpla ese instante y se cancela, dejando que la página
+// se desplace con normalidad. Se guarda en el campo "orden" de cada tarea,
+// que ya se usaba para las series en lote; el historial de completadas no
+// se puede reordenar. Funciona con mouse y con el dedo (Pointer Events).
+// ---------------------------------------------------------------------
+const ESPERA_ARRASTRE_MS = 450;
+const TOLERANCIA_ARRASTRE_PX = 10;
+
+function activarArrastre(contenedorEl, tareasPorId) {
+  contenedorEl.querySelectorAll('.seccion-lista[data-arrastrable="1"]').forEach((lista) => {
+    lista.querySelectorAll('.tarjeta-tarea[data-se-puede-arrastrar="1"]').forEach((tarjeta) => {
+      let temporizador = null;
+      let activo = false;
+      let origenX = 0, origenY = 0;
+
+      const cancelarEspera = () => { if (temporizador) { clearTimeout(temporizador); temporizador = null; } };
+
+      const mover = (ev2) => {
+        ev2.preventDefault();
+        const y = ev2.clientY;
+        const otras = [...lista.querySelectorAll(".tarjeta-tarea")].filter((el) => el !== tarjeta);
+        let destino = null;
+        for (const el of otras) {
+          const rect = el.getBoundingClientRect();
+          if (y < rect.top + rect.height / 2) { destino = el; break; }
+        }
+        if (destino) lista.insertBefore(tarjeta, destino);
+        else lista.appendChild(tarjeta);
+      };
+      const soltar = async () => {
+        lista.removeEventListener("pointermove", mover);
+        lista.removeEventListener("pointerup", soltar);
+        lista.removeEventListener("pointercancel", soltar);
+        tarjeta.classList.remove("arrastrando");
+        activo = false;
+        const ids = [...lista.querySelectorAll(".tarjeta-tarea")].map((el) => el.dataset.id);
+        try {
+          const lote = writeBatch(db);
+          let huboCambios = false;
+          ids.forEach((id, i) => {
+            const t = tareasPorId.get(id);
+            if (!t || t.orden === i) return;
+            huboCambios = true;
+            lote.update(doc(db, "tareas", id), { orden: i, actualizadoEn: serverTimestamp() });
+          });
+          if (huboCambios) await lote.commit();
+        } catch (e) { flash("No se pudo guardar el nuevo orden (¿permisos?).", "error"); }
+      };
+
+      tarjeta.addEventListener("pointerdown", (ev) => {
+        // El selector de estado y los botones de editar/eliminar deben
+        // seguir respondiendo al toque normal, sin esperar.
+        if (ev.target.closest(".acciones-tarea")) return;
+        origenX = ev.clientX; origenY = ev.clientY;
+        cancelarEspera();
+        temporizador = setTimeout(() => {
+          temporizador = null;
+          activo = true;
+          tarjeta.classList.add("arrastrando");
+          if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* no crítico */ } }
+          // Importante: la captura del puntero se pide sobre "lista" (que
+          // nunca se mueve en el DOM) y no sobre "tarjeta": al reordenar, la
+          // tarjeta se reinserta con insertBefore/appendChild, y el
+          // navegador libera automáticamente la captura de un elemento que
+          // se reubica en el árbol del DOM, aunque sea el mismo nodo.
+          lista.setPointerCapture(ev.pointerId);
+          lista.addEventListener("pointermove", mover);
+          lista.addEventListener("pointerup", soltar);
+          lista.addEventListener("pointercancel", soltar);
+        }, ESPERA_ARRASTRE_MS);
+      });
+      // Mientras se espera a que se cumpla el tiempo de mantener presionado,
+      // cualquier movimiento de más de unos pocos píxeles se interpreta como
+      // que la persona solo quería hacer scroll, y se cancela el arrastre
+      // (sin tocar preventDefault, para no interferir con el scroll nativo).
+      tarjeta.addEventListener("pointermove", (ev) => {
+        if (activo || !temporizador) return;
+        if (Math.abs(ev.clientX - origenX) > TOLERANCIA_ARRASTRE_PX || Math.abs(ev.clientY - origenY) > TOLERANCIA_ARRASTRE_PX) {
+          cancelarEspera();
+        }
+      });
+      tarjeta.addEventListener("pointerup", cancelarEspera);
+      tarjeta.addEventListener("pointercancel", cancelarEspera);
+      tarjeta.addEventListener("pointerleave", () => { if (!activo) cancelarEspera(); });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------
 // Vista "Hoy" — mis propias tareas
 // ---------------------------------------------------------------------
 function vistaHoy() {
   const cont = $("vista");
-  cont.innerHTML = `<h1>Tu agenda de hoy</h1><p class="subtitulo">${fechaLarga()}</p><div id="hoyResumen" class="resumen"></div><div id="hoyListas"></div>`;
+  cont.innerHTML = `<h1>Tu agenda de hoy</h1><p class="subtitulo">${fechaLarga()}</p><div id="hoyResumen" class="resumen"></div><p class="nota-campo">💡 Mantén presionada una tarea unos segundos para arrastrarla y cambiar su orden dentro del grupo.</p><div id="hoyListas"></div>`;
   const q = query(collection(db, "tareas"), where("responsableUid", "==", miUid));
   unsubs.hoy = onSnapshot(q, (snap) => {
     const tareas = []; const porId = new Map();
@@ -492,17 +589,18 @@ function vistaHoy() {
       <div class="chip"><strong>${deHoy.length}</strong> para hoy</div>
       <div class="chip"><strong>${activas.length}</strong> pendientes en total</div>`;
     const html = [
-      seccionHTML("secVencidas", "Vencidas", "🔴", vencidas, false),
-      seccionHTML("secHoy", "Para hoy", "🟢", deHoy, false),
-      seccionHTML("secProximas", "Próximos 7 días", "📅", proximas, false),
-      seccionHTML("secFuturas", "Más adelante", "🗓️", futuras, false),
-      seccionHTML("secSinFecha", "Sin fecha", "📋", sinFecha, false),
+      seccionHTML("secVencidas", "Vencidas", "🔴", vencidas, false, null, true),
+      seccionHTML("secHoy", "Para hoy", "🟢", deHoy, false, null, true),
+      seccionHTML("secProximas", "Próximos 7 días", "📅", proximas, false, null, true),
+      seccionHTML("secFuturas", "Más adelante", "🗓️", futuras, false, null, true),
+      seccionHTML("secSinFecha", "Sin fecha", "📋", sinFecha, false, null, true),
       seccionHTML("secCompletadas", "Historial de completadas", "✅", completadas, false, (t) => filaHistorialHTML(t, false)),
     ].join("");
     $("hoyListas").innerHTML = html || '<p class="vacio">No tienes tareas pendientes. 🎉</p>';
     conectarAccionesTareas($("hoyListas"), porId);
     conectarHistorial($("hoyListas"), porId);
     conectarSecciones($("hoyListas"));
+    activarArrastre($("hoyListas"), porId);
   });
 }
 

@@ -14,6 +14,11 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
 import { arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
+// Se cambia a mano cada vez que se entrega una actualización, para poder
+// confirmar (abriendo el menú ☰) que el despliegue realmente llegó al
+// navegador y no se está viendo una copia vieja en caché.
+const APP_VERSION = "v2026-10-28b";
+
 const $ = (id) => document.getElementById(id);
 const DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
 const MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
@@ -52,7 +57,7 @@ const PROYECTOS_POR_DEFECTO = [
 ].sort((a, b) => a.localeCompare(b, "es"));
 
 // Catálogo "en vivo": lista de nombres a mostrar en los selectores, y mapa
-// nombre -> { permitidos: [uids] } con la info de restricción de cada uno.
+// nombre -> { soloDueno: boolean } con la info de visibilidad de cada uno.
 // Se llenan en cargarProyectos() y se refrescan cuando el owner edita algo
 // en Administración.
 let PROYECTOS = [...PROYECTOS_POR_DEFECTO];
@@ -103,28 +108,11 @@ function soyOwner() { return miPerfil?.rol === "owner"; }
 function soyAdmin() { return miPerfil?.rol === "admin"; }
 function puedoAdministrar() { return soyOwner() || soyAdmin(); }
 
-// uids del/los dueño(s) (owner) que tengo en caché — normalmente solo uno.
-function uidsDelDueño() {
-  return [...usuariosCache.values()].filter((u) => u.rol === "owner").map((u) => u.id);
-}
-
 // uids que puedo ver/gestionar como responsables (incluye el mío propio).
-// Para un jefe de área, además de su personal, incluye al dueño: las
-// tareas asignadas a él también se pueden ver/editar, igual que las del
-// propio equipo (ver firestore.rules → tareaDelDueño()).
 function misUidsEnAlcance() {
   if (soyOwner()) return [...usuariosCache.keys()];
-  if (soyAdmin()) return [miUid, ...(miPerfil.gestionados || []), ...uidsDelDueño()];
-  return [miUid];
-}
-
-// A diferencia de misUidsEnAlcance(), esta lista es la que se ofrece al
-// crear una tarea NUEVA: un jefe de área puede ver/editar las tareas que ya
-// estén asignadas al dueño, pero no puede asignarle tareas nuevas a él (eso
-// sigue siendo exclusivo de cada quien sobre sí mismo, o del propio dueño).
-function misUidsParaAsignarNueva() {
   if (soyAdmin()) return [miUid, ...(miPerfil.gestionados || [])];
-  return misUidsEnAlcance();
+  return [miUid];
 }
 
 function apagarListener(clave) { if (unsubs[clave]) { unsubs[clave](); delete unsubs[clave]; } }
@@ -223,10 +211,6 @@ async function cargarUsuarios() {
       const s = await getDoc(doc(db, "usuarios", uid));
       if (s.exists()) usuariosCache.set(uid, { id: uid, ...s.data() });
     }
-    // También trae el perfil del dueño: ahora los jefes de área pueden
-    // ver/editar sus tareas, y necesitan poder mostrar su nombre.
-    const snapDueño = await getDocs(query(collection(db, "usuarios"), where("rol", "==", "owner")));
-    snapDueño.forEach((d) => usuariosCache.set(d.id, { id: d.id, ...d.data() }));
   }
 }
 function nombreDe(uid) { return usuariosCache.get(uid)?.nombre || "—"; }
@@ -254,7 +238,7 @@ async function cargarProyectos() {
 }
 function proyectoRestringido(nombre) {
   const info = proyectosInfo.get(nombre);
-  return !!(info && Array.isArray(info.permitidos) && info.permitidos.length > 0);
+  return !!(info && info.soloDueno);
 }
 
 // ---------------------------------------------------------------------
@@ -269,7 +253,11 @@ function construirNav() {
   }
   if (soyOwner()) tabs.push(["admin", "Administración"]);
   pestañasDisponibles = tabs;
-  $("menuLista").innerHTML = tabs.map(([id, t]) => `<button type="button" data-vista="${id}">${t}</button>`).join("");
+  // Versión visible al pie del menú: sirve para confirmar, con solo abrir el
+  // menú, que el navegador/celular ya está usando la copia más reciente
+  // después de un despliegue (y no una versión vieja en caché).
+  $("menuLista").innerHTML = tabs.map(([id, t]) => `<button type="button" data-vista="${id}">${t}</button>`).join("")
+    + `<div class="version-app">${APP_VERSION}</div>`;
   $("menuLista").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
     irA(b.dataset.vista);
     cerrarMenu();
@@ -310,32 +298,17 @@ window.__app = { $, flash, hoyStr, sumarDias, fechaLegible, fechaLarga, esc, nom
 // ---------------------------------------------------------------------
 function puedoAdministrarTarea(t) {
   if (soyOwner()) return true;
-  if (soyAdmin()) {
-    if ((miPerfil.gestionados || []).includes(t.responsableUid)) return true;
-    // Las tareas asignadas al dueño también las puede ver/editar cualquier
-    // jefe de área (ver firestore.rules → tareaDelDueño()).
-    const responsable = usuariosCache.get(t.responsableUid);
-    return !!responsable && responsable.rol === "owner";
-  }
+  if (soyAdmin()) return (miPerfil.gestionados || []).includes(t.responsableUid);
   return false;
 }
 
-// true si a mí puntualmente me dieron acceso especial a ese proyecto (ver
-// proyectosInfo / proyectoRestringido), sin importar si gestiono o no a la
-// persona responsable de la tarea.
-function tengoAccesoEspecialProyecto(proyecto) {
-  if (!proyecto) return false;
-  const info = proyectosInfo.get(proyecto);
-  return !!(info && Array.isArray(info.permitidos) && info.permitidos.includes(miUid));
-}
-
 // Quién puede editar el resto de los datos de una tarea (título, proyecto,
-// prioridad, fecha, notas, estado): quien la administra, la propia persona
-// responsable (para poder actualizarla aunque no gestione a nadie), o quien
-// tenga acceso especial al proyecto. Nadie de estos puede reasignarla a otra
-// persona salvo quien la administra — ver reglas de Firestore (noReasigna()).
+// prioridad, fecha, notas, estado): quien la administra, o la propia persona
+// responsable (para poder actualizarla aunque no gestione a nadie). Nadie de
+// estos puede reasignarla a otra persona salvo quien la administra — ver
+// reglas de Firestore (noReasigna()).
 function puedoEditarTarea(t) {
-  return puedoAdministrarTarea(t) || t.responsableUid === miUid || tengoAccesoEspecialProyecto(t.proyecto);
+  return puedoAdministrarTarea(t) || t.responsableUid === miUid;
 }
 
 function tarjetaTareaHTML(t, { mostrarResponsable, conArrastre }) {
@@ -672,11 +645,9 @@ let tareaEditando = null;
 // forzarIncluirUid: cuando se edita una tarea que no se puede reasignar
 // (ver abrirModalTarea), hay que mostrar a la persona responsable aunque no
 // esté dentro de "a quién gestiono", para no perder ese dato en el selector.
-// uidsBase: la lista de personas a ofrecer (por defecto, todo mi alcance);
-// al crear una tarea nueva se usa una lista más corta, ver abrirModalTarea.
-function poblarSelectResponsable(uidSeleccionado, forzarIncluirUid, uidsBase) {
+function poblarSelectResponsable(uidSeleccionado, forzarIncluirUid) {
   const sel = $("tResponsable");
-  const uids = uidsBase || misUidsEnAlcance();
+  const uids = misUidsEnAlcance();
   const lista = forzarIncluirUid && !uids.includes(forzarIncluirUid) ? [forzarIncluirUid, ...uids] : uids;
   sel.innerHTML = lista.map((uid) =>
     `<option value="${uid}" ${uid === uidSeleccionado ? "selected" : ""}>${esc(nombreDe(uid))}${uid === miUid ? " (yo)" : ""}</option>`
@@ -707,11 +678,7 @@ function abrirModalTarea(t) {
   // actualizar el resto de los datos pero NO reasignar la tarea a alguien
   // más — eso coincide con lo que permiten las reglas de Firestore.
   const puedeReasignar = !t || puedoAdministrarTarea(t);
-  // Al crear una tarea NUEVA se ofrece una lista más corta (sin el dueño):
-  // un jefe de área puede ver/editar tareas que YA estén asignadas al
-  // dueño, pero no puede asignarle una nueva (ver misUidsParaAsignarNueva).
-  const uidsParaSelect = t ? misUidsEnAlcance() : misUidsParaAsignarNueva();
-  poblarSelectResponsable(t?.responsableUid || miUid, puedeReasignar ? null : t.responsableUid, uidsParaSelect);
+  poblarSelectResponsable(t?.responsableUid || miUid, puedeReasignar ? null : t.responsableUid);
   $("tResponsable").disabled = !puedeReasignar;
   $("tResponsableHint").hidden = puedeReasignar;
   $("tPrioridad").value = t?.prioridad || "media";
@@ -1185,9 +1152,9 @@ function vistaAdmin() {
 
     <h2 style="margin-top:28px">Proyectos</h2>
     <p class="subtitulo" style="margin-bottom:10px">
-      Los proyectos que aparecen al crear una tarea. Por defecto, cualquier jefe de área ve las tareas de su gente
-      sin importar el proyecto. Si a uno le das "acceso restringido" (ej. GERENCIA), solo tú y las personas que
-      elijas ahí podrán verlo — ni siquiera el jefe que normalmente gestiona a esa persona, a menos que también lo agregues.
+      Los proyectos que aparecen al crear una tarea. Cada uno tiene 2 opciones de visibilidad: "para todos" (cualquier
+      jefe de área ve las tareas de su gente sin importar el proyecto, como siempre) o "únicamente para mí" (solo tú
+      ves/administras esas tareas, ej. para un proyecto confidencial como GERENCIA).
     </p>
     <div class="form-inline">
       <div class="campo"><label>Nuevo proyecto</label><input id="nuProyecto" placeholder="ej. GERENCIA"></div>
@@ -1227,7 +1194,7 @@ function vistaAdmin() {
     const nombre = $("nuProyecto").value.trim().toUpperCase();
     if (!nombre) { $("pyErr").textContent = "Escribe un nombre de proyecto."; return; }
     try {
-      await setDoc(doc(db, "proyectos", nombre), { permitidos: [], creadoPorUid: miUid, creadoEn: serverTimestamp() });
+      await setDoc(doc(db, "proyectos", nombre), { soloDueno: false, creadoPorUid: miUid, creadoEn: serverTimestamp() });
       flash("Proyecto agregado.");
       $("nuProyecto").value = "";
     } catch (e) { $("pyErr").textContent = "No se pudo guardar (¿permisos?)."; }
@@ -1237,7 +1204,7 @@ function vistaAdmin() {
     try {
       const lote = writeBatch(db);
       for (const nombre of PROYECTOS_POR_DEFECTO) {
-        lote.set(doc(db, "proyectos", nombre), { permitidos: [], creadoPorUid: miUid, creadoEn: serverTimestamp() });
+        lote.set(doc(db, "proyectos", nombre), { soloDueno: false, creadoPorUid: miUid, creadoEn: serverTimestamp() });
       }
       await lote.commit();
       flash("Se agregó el catálogo de 15 proyectos.");
@@ -1309,9 +1276,8 @@ function vistaAdmin() {
     // Nueva tarea / filtros, al día con lo que se vea aquí
     PROYECTOS = nombres.length ? nombres : [...PROYECTOS_POR_DEFECTO];
     $("btnSembrarProyectos").hidden = nombres.length > 0;
-    const todas = [...usuariosCache.values()].filter((u) => u.id !== miUid);
     $("listaProyectos").innerHTML = nombres.length
-      ? nombres.map((n) => proyectoFilaHTML(n, proyectosInfo.get(n), todas)).join("")
+      ? nombres.map((n) => proyectoFilaHTML(n, proyectosInfo.get(n))).join("")
       : '<p class="vacio">Todavía no has guardado ningún proyecto. Agrega uno, o usa el botón de catálogo de arriba.</p>';
     conectarFilaProyectos();
   });
@@ -1387,26 +1353,22 @@ function conectarFilaUsuarios() {
   });
 }
 
-function proyectoFilaHTML(nombre, info, todasPersonas) {
-  const permitidos = (info && info.permitidos) || [];
-  const restringido = permitidos.length > 0;
-  const disponibles = todasPersonas.filter((o) => !permitidos.includes(o.id));
+function proyectoFilaHTML(nombre, info) {
+  const soloDueno = !!(info && info.soloDueno);
   return `
     <div class="proyecto-fila">
       <div class="proyecto-fila-cabecera">
         <strong>${esc(nombre)}</strong>
-        <span class="badge-visibilidad ${restringido ? "restringido" : "abierto"}">${restringido ? `🔒 Restringido a ${permitidos.length} persona${permitidos.length === 1 ? "" : "s"}` : "🌐 Visible para tu equipo"}</span>
+        <span class="badge-visibilidad ${soloDueno ? "restringido" : "abierto"}">${soloDueno ? "🔒 Únicamente para mí" : "🌐 Visible para todos"}</span>
         <button type="button" class="icono-accion btn-quitar-proyecto" data-proyecto="${esc(nombre)}" title="Quitar proyecto">✕</button>
       </div>
-      <p class="meta-tarea" style="margin:4px 0 6px">Además de ti, ¿quién más puede ver las tareas de este proyecto?</p>
-      <div class="lista-chips">
-        ${permitidos.map((uid) => `<span class="chip-quitable"><span>${esc(nombreDe(uid))}</span><button type="button" class="btn-quitar-permitido" data-proyecto="${esc(nombre)}" data-uid="${uid}">✕</button></span>`).join("") || '<span class="meta-tarea">Nadie más por ahora (solo tú, y quien gestione normalmente a esa persona).</span>'}
+      <div class="campo" style="margin-top:6px">
+        <label>¿Quién puede ver las tareas de este proyecto?</label>
+        <select class="sel-visibilidad-proyecto" data-proyecto="${esc(nombre)}">
+          <option value="todos" ${soloDueno ? "" : "selected"}>🌐 Compartir con todos (cada jefe de área ve las de su gente, como siempre)</option>
+          <option value="dueno" ${soloDueno ? "selected" : ""}>🔒 Privado (únicamente yo lo veo/administro)</option>
+        </select>
       </div>
-      ${disponibles.length ? `
-        <select class="sel-agregar-permitido" data-proyecto="${esc(nombre)}" style="margin-top:6px">
-          <option value="">+ dar acceso a…</option>
-          ${disponibles.map((o) => `<option value="${o.id}">${esc(o.nombre)}</option>`).join("")}
-        </select>` : ""}
     </div>`;
 }
 
@@ -1418,17 +1380,11 @@ function conectarFilaProyectos() {
       catch (e) { flash("No se pudo quitar.", "error"); }
     });
   });
-  $("listaProyectos").querySelectorAll(".sel-agregar-permitido").forEach((sel) => {
+  $("listaProyectos").querySelectorAll(".sel-visibilidad-proyecto").forEach((sel) => {
     sel.addEventListener("change", async () => {
-      if (!sel.value) return;
-      try { await updateDoc(doc(db, "proyectos", sel.dataset.proyecto), { permitidos: arrayUnion(sel.value) }); flash("Acceso agregado."); }
-      catch (e) { flash("No se pudo agregar.", "error"); }
-    });
-  });
-  $("listaProyectos").querySelectorAll(".btn-quitar-permitido").forEach((b) => {
-    b.addEventListener("click", async () => {
-      try { await updateDoc(doc(db, "proyectos", b.dataset.proyecto), { permitidos: arrayRemove(b.dataset.uid) }); flash("Acceso quitado."); }
-      catch (e) { flash("No se pudo quitar.", "error"); }
+      const soloDueno = sel.value === "dueno";
+      try { await updateDoc(doc(db, "proyectos", sel.dataset.proyecto), { soloDueno }); flash("Visibilidad actualizada."); }
+      catch (e) { flash("No se pudo cambiar la visibilidad.", "error"); sel.value = soloDueno ? "todos" : "dueno"; }
     });
   });
 }

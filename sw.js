@@ -16,12 +16,12 @@
    bloque hay que pegarlo también aquí para que las notificaciones push
    funcionen con la app cerrada o en segundo plano. */
 const firebaseConfig = {
-  apiKey: "PEGAR_AQUI",
-  authDomain: "PEGAR_AQUI.firebaseapp.com",
-  projectId: "PEGAR_AQUI",
-  storageBucket: "PEGAR_AQUI.appspot.com",
-  messagingSenderId: "PEGAR_AQUI",
-  appId: "PEGAR_AQUI"
+  apiKey: "AIzaSyDVa8QNEY7wQNwkmit_NrmksQkfm-k6jYs",
+  authDomain: "agenda-trabajo-75f2f.firebaseapp.com",
+  projectId: "agenda-trabajo-75f2f",
+  storageBucket: "agenda-trabajo-75f2f.firebasestorage.app",
+  messagingSenderId: "860734172074",
+  appId: "1:860734172074:web:e9110f67e3f1089a16d9d3"
 };
 /* ======================================================================= */
 

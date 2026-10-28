@@ -103,11 +103,28 @@ function soyOwner() { return miPerfil?.rol === "owner"; }
 function soyAdmin() { return miPerfil?.rol === "admin"; }
 function puedoAdministrar() { return soyOwner() || soyAdmin(); }
 
-// uids que puedo ver/gestionar como responsables (incluye el mío propio)
+// uids del/los dueño(s) (owner) que tengo en caché — normalmente solo uno.
+function uidsDelDueño() {
+  return [...usuariosCache.values()].filter((u) => u.rol === "owner").map((u) => u.id);
+}
+
+// uids que puedo ver/gestionar como responsables (incluye el mío propio).
+// Para un jefe de área, además de su personal, incluye al dueño: las
+// tareas asignadas a él también se pueden ver/editar, igual que las del
+// propio equipo (ver firestore.rules → tareaDelDueño()).
 function misUidsEnAlcance() {
   if (soyOwner()) return [...usuariosCache.keys()];
-  if (soyAdmin()) return [miUid, ...(miPerfil.gestionados || [])];
+  if (soyAdmin()) return [miUid, ...(miPerfil.gestionados || []), ...uidsDelDueño()];
   return [miUid];
+}
+
+// A diferencia de misUidsEnAlcance(), esta lista es la que se ofrece al
+// crear una tarea NUEVA: un jefe de área puede ver/editar las tareas que ya
+// estén asignadas al dueño, pero no puede asignarle tareas nuevas a él (eso
+// sigue siendo exclusivo de cada quien sobre sí mismo, o del propio dueño).
+function misUidsParaAsignarNueva() {
+  if (soyAdmin()) return [miUid, ...(miPerfil.gestionados || [])];
+  return misUidsEnAlcance();
 }
 
 function apagarListener(clave) { if (unsubs[clave]) { unsubs[clave](); delete unsubs[clave]; } }
@@ -206,6 +223,10 @@ async function cargarUsuarios() {
       const s = await getDoc(doc(db, "usuarios", uid));
       if (s.exists()) usuariosCache.set(uid, { id: uid, ...s.data() });
     }
+    // También trae el perfil del dueño: ahora los jefes de área pueden
+    // ver/editar sus tareas, y necesitan poder mostrar su nombre.
+    const snapDueño = await getDocs(query(collection(db, "usuarios"), where("rol", "==", "owner")));
+    snapDueño.forEach((d) => usuariosCache.set(d.id, { id: d.id, ...d.data() }));
   }
 }
 function nombreDe(uid) { return usuariosCache.get(uid)?.nombre || "—"; }
@@ -289,7 +310,13 @@ window.__app = { $, flash, hoyStr, sumarDias, fechaLegible, fechaLarga, esc, nom
 // ---------------------------------------------------------------------
 function puedoAdministrarTarea(t) {
   if (soyOwner()) return true;
-  if (soyAdmin()) return (miPerfil.gestionados || []).includes(t.responsableUid);
+  if (soyAdmin()) {
+    if ((miPerfil.gestionados || []).includes(t.responsableUid)) return true;
+    // Las tareas asignadas al dueño también las puede ver/editar cualquier
+    // jefe de área (ver firestore.rules → tareaDelDueño()).
+    const responsable = usuariosCache.get(t.responsableUid);
+    return !!responsable && responsable.rol === "owner";
+  }
   return false;
 }
 
@@ -479,22 +506,36 @@ function conectarSecciones(contenedorEl) {
 // falta ningún botón aparte: se mantiene presionado cualquier espacio de la
 // tarjeta (menos los botones/selector de la derecha, que deben seguir
 // respondiendo al toque normal) y, pasado un pequeño instante sin soltar,
-// se activa el arrastre. Si en vez de eso la persona solo estaba
-// deslizando para hacer scroll de la pantalla, se detecta el movimiento
-// antes de que se cumpla ese instante y se cancela, dejando que la página
-// se desplace con normalidad. Se guarda en el campo "orden" de cada tarea,
-// que ya se usaba para las series en lote; el historial de completadas no
-// se puede reordenar. Funciona con mouse y con el dedo (Pointer Events).
+// se activa el arrastre.
+//
+// Celulares (instalado como app): estas tarjetas usan touch-action:none
+// (ver CSS) porque, una vez que el dedo empieza a tocar, el navegador
+// decide YA en ese instante si va a dejar que la página haga scroll solo
+// con el dedo, sin volver a preguntarle a este código — cambiarlo recién
+// cuando se activa el arrastre (como se hacía antes) llega demasiado tarde
+// y la pantalla se termina moviendo sola en vez de la tarjeta. Por eso,
+// mientras se espera a ver si es una pulsación larga, si la persona mueve
+// el dedo antes de tiempo, este código reproduce el scroll a mano
+// (window.scrollBy) seguiendo el dedo, imitando el scroll normal.
+// Se guarda en el campo "orden" de cada tarea, que ya se usaba para las
+// series en lote; el historial de completadas no se puede reordenar.
+// Funciona con mouse y con el dedo (Pointer Events).
 // ---------------------------------------------------------------------
 const ESPERA_ARRASTRE_MS = 450;
 const TOLERANCIA_ARRASTRE_PX = 10;
+
+function desplazarPagina(dy) {
+  if (typeof window.scrollBy === "function") window.scrollBy(0, dy);
+  else if (document.scrollingElement) document.scrollingElement.scrollTop += dy;
+}
 
 function activarArrastre(contenedorEl, tareasPorId) {
   contenedorEl.querySelectorAll('.seccion-lista[data-arrastrable="1"]').forEach((lista) => {
     lista.querySelectorAll('.tarjeta-tarea[data-se-puede-arrastrar="1"]').forEach((tarjeta) => {
       let temporizador = null;
-      let activo = false;
-      let origenX = 0, origenY = 0;
+      let activo = false; // ya se activó el modo "reordenar"
+      let haciendoScroll = false; // se decidió que es un gesto para desplazar la página
+      let origenY = 0, ultimoY = 0;
 
       // Refuerzo, además del CSS (user-select:none): algunos navegadores
       // igual disparan el inicio de una selección de texto al mantener
@@ -504,8 +545,7 @@ function activarArrastre(contenedorEl, tareasPorId) {
 
       const cancelarEspera = () => { if (temporizador) { clearTimeout(temporizador); temporizador = null; } };
 
-      const mover = (ev2) => {
-        ev2.preventDefault();
+      const reordenar = (ev2) => {
         const y = ev2.clientY;
         const otras = [...lista.querySelectorAll(".tarjeta-tarea")].filter((el) => el !== tarjeta);
         let destino = null;
@@ -516,10 +556,32 @@ function activarArrastre(contenedorEl, tareasPorId) {
         if (destino) lista.insertBefore(tarjeta, destino);
         else lista.appendChild(tarjeta);
       };
-      const soltar = async () => {
+
+      const mover = (ev2) => {
+        ev2.preventDefault();
+        if (activo) { reordenar(ev2); return; }
+        if (haciendoScroll) {
+          desplazarPagina(ultimoY - ev2.clientY);
+          ultimoY = ev2.clientY;
+          return;
+        }
+        if (!temporizador) return;
+        if (Math.abs(ev2.clientY - origenY) <= TOLERANCIA_ARRASTRE_PX) return;
+        // Se movió antes de completarse la espera: no era una pulsación
+        // larga, sino que quería hacer scroll — a partir de aquí este
+        // código se encarga de desplazar la página a mano (ver nota arriba).
+        cancelarEspera();
+        haciendoScroll = true;
+        ultimoY = ev2.clientY;
+      };
+
+      const terminar = async () => {
+        cancelarEspera();
         lista.removeEventListener("pointermove", mover);
-        lista.removeEventListener("pointerup", soltar);
-        lista.removeEventListener("pointercancel", soltar);
+        lista.removeEventListener("pointerup", terminar);
+        lista.removeEventListener("pointercancel", terminar);
+        haciendoScroll = false;
+        if (!activo) return;
         tarjeta.classList.remove("arrastrando");
         document.body.classList.remove("arrastrando-activo");
         activo = false;
@@ -541,38 +603,28 @@ function activarArrastre(contenedorEl, tareasPorId) {
         // El selector de estado y los botones de editar/eliminar deben
         // seguir respondiendo al toque normal, sin esperar.
         if (ev.target.closest(".acciones-tarea")) return;
-        origenX = ev.clientX; origenY = ev.clientY;
+        origenY = ev.clientY; ultimoY = ev.clientY;
+        haciendoScroll = false;
         cancelarEspera();
+        // Importante: la captura del puntero se pide sobre "lista" (que
+        // nunca se mueve en el DOM) desde YA, y no recién al activarse el
+        // arrastre: así no se pierden eventos si el dedo se sale un poco
+        // de la tarjeta mientras se decide si es scroll o arrastre, y más
+        // adelante, cuando sí se reordena, tampoco se pierde la captura
+        // aunque la tarjeta se reinserte en el DOM con insertBefore.
+        lista.setPointerCapture(ev.pointerId);
+        lista.addEventListener("pointermove", mover);
+        lista.addEventListener("pointerup", terminar);
+        lista.addEventListener("pointercancel", terminar);
         temporizador = setTimeout(() => {
           temporizador = null;
+          if (haciendoScroll) return; // ya se decidió que era scroll, no activar el arrastre
           activo = true;
           tarjeta.classList.add("arrastrando");
           document.body.classList.add("arrastrando-activo");
           if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* no crítico */ } }
-          // Importante: la captura del puntero se pide sobre "lista" (que
-          // nunca se mueve en el DOM) y no sobre "tarjeta": al reordenar, la
-          // tarjeta se reinserta con insertBefore/appendChild, y el
-          // navegador libera automáticamente la captura de un elemento que
-          // se reubica en el árbol del DOM, aunque sea el mismo nodo.
-          lista.setPointerCapture(ev.pointerId);
-          lista.addEventListener("pointermove", mover);
-          lista.addEventListener("pointerup", soltar);
-          lista.addEventListener("pointercancel", soltar);
         }, ESPERA_ARRASTRE_MS);
       });
-      // Mientras se espera a que se cumpla el tiempo de mantener presionado,
-      // cualquier movimiento de más de unos pocos píxeles se interpreta como
-      // que la persona solo quería hacer scroll, y se cancela el arrastre
-      // (sin tocar preventDefault, para no interferir con el scroll nativo).
-      tarjeta.addEventListener("pointermove", (ev) => {
-        if (activo || !temporizador) return;
-        if (Math.abs(ev.clientX - origenX) > TOLERANCIA_ARRASTRE_PX || Math.abs(ev.clientY - origenY) > TOLERANCIA_ARRASTRE_PX) {
-          cancelarEspera();
-        }
-      });
-      tarjeta.addEventListener("pointerup", cancelarEspera);
-      tarjeta.addEventListener("pointercancel", cancelarEspera);
-      tarjeta.addEventListener("pointerleave", () => { if (!activo) cancelarEspera(); });
     });
   });
 }
@@ -620,9 +672,11 @@ let tareaEditando = null;
 // forzarIncluirUid: cuando se edita una tarea que no se puede reasignar
 // (ver abrirModalTarea), hay que mostrar a la persona responsable aunque no
 // esté dentro de "a quién gestiono", para no perder ese dato en el selector.
-function poblarSelectResponsable(uidSeleccionado, forzarIncluirUid) {
+// uidsBase: la lista de personas a ofrecer (por defecto, todo mi alcance);
+// al crear una tarea nueva se usa una lista más corta, ver abrirModalTarea.
+function poblarSelectResponsable(uidSeleccionado, forzarIncluirUid, uidsBase) {
   const sel = $("tResponsable");
-  const uids = misUidsEnAlcance();
+  const uids = uidsBase || misUidsEnAlcance();
   const lista = forzarIncluirUid && !uids.includes(forzarIncluirUid) ? [forzarIncluirUid, ...uids] : uids;
   sel.innerHTML = lista.map((uid) =>
     `<option value="${uid}" ${uid === uidSeleccionado ? "selected" : ""}>${esc(nombreDe(uid))}${uid === miUid ? " (yo)" : ""}</option>`
@@ -653,7 +707,11 @@ function abrirModalTarea(t) {
   // actualizar el resto de los datos pero NO reasignar la tarea a alguien
   // más — eso coincide con lo que permiten las reglas de Firestore.
   const puedeReasignar = !t || puedoAdministrarTarea(t);
-  poblarSelectResponsable(t?.responsableUid || miUid, puedeReasignar ? null : t.responsableUid);
+  // Al crear una tarea NUEVA se ofrece una lista más corta (sin el dueño):
+  // un jefe de área puede ver/editar tareas que YA estén asignadas al
+  // dueño, pero no puede asignarle una nueva (ver misUidsParaAsignarNueva).
+  const uidsParaSelect = t ? misUidsEnAlcance() : misUidsParaAsignarNueva();
+  poblarSelectResponsable(t?.responsableUid || miUid, puedeReasignar ? null : t.responsableUid, uidsParaSelect);
   $("tResponsable").disabled = !puedeReasignar;
   $("tResponsableHint").hidden = puedeReasignar;
   $("tPrioridad").value = t?.prioridad || "media";

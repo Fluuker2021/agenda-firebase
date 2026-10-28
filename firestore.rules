@@ -32,9 +32,14 @@ service cloud.firestore {
     // Solo el owner crea cuentas y cambia roles/asignaciones (evita que
     // alguien se auto-ascienda a admin). Cada quien puede actualizar sus
     // propios campos no sensibles (ej. el token de notificaciones push).
+    //
+    // Los jefes de área también pueden leer el perfil del owner (dueño):
+    // lo necesitan para mostrar su nombre en las tareas que él tiene
+    // asignadas, que ahora también pueden ver/editar (ver más abajo, en
+    // tareas/{id}).
     // ---------------------------------------------------------------
     match /usuarios/{uid} {
-      allow read: if esOwner() || esYo(uid) || gestiona(uid);
+      allow read: if esOwner() || esYo(uid) || gestiona(uid) || (esAdmin() && resource.data.rol == 'owner');
 
       allow create: if esOwner();
 
@@ -88,6 +93,20 @@ service cloud.firestore {
         && request.auth.uid in proyectoDoc(proyecto).permitidos;
     }
 
+    // true si la tarea está asignada al owner (dueño). Cualquier jefe de
+    // área tiene, sobre ESTAS tareas puntuales, el mismo acceso de
+    // visualización y edición que tendría sobre las de su propio personal —
+    // así el trabajo del dueño no queda invisible/intocable para los jefes
+    // de área, sin que eso mezcle el alcance de un jefe con el de otro
+    // (ellos entre sí siguen sin verse el uno al otro).
+    // NOTA: nombre de función sin "ñ" a propósito — el compilador de reglas
+    // de Firestore no acepta letras con tilde/ñ en nombres de función o
+    // variable (sí las acepta dentro de comentarios y textos normales).
+    function tareaDelDueno(uid) {
+      return exists(/databases/$(database)/documents/usuarios/$(uid))
+        && get(/databases/$(database)/documents/usuarios/$(uid)).data.rol == 'owner';
+    }
+
     // ---------------------------------------------------------------
     // tareas/{id}
     // Lectura/escritura total: owner, o admin sobre su personal asignado
@@ -123,6 +142,7 @@ service cloud.firestore {
       allow read: if esOwner()
         || esYo(resource.data.responsableUid)
         || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto))
+        || (esAdmin() && tareaDelDueno(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto))
         || estoyPermitidoEnProyecto(resource.data.proyecto);
 
       allow create: if autenticado()
@@ -135,6 +155,9 @@ service cloud.firestore {
         || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto)
             && (request.resource.data.responsableUid == resource.data.responsableUid
                 || gestiona(request.resource.data.responsableUid)))
+        || (esAdmin() && tareaDelDueno(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto)
+            && (request.resource.data.responsableUid == resource.data.responsableUid
+                || gestiona(request.resource.data.responsableUid)))
         || (esYo(resource.data.responsableUid) && noReasigna())
         || (estoyPermitidoEnProyecto(resource.data.proyecto) && noReasigna());
 
@@ -144,6 +167,7 @@ service cloud.firestore {
       // desde el historial de la app (ver botón "Eliminar" ahí).
       allow delete: if esOwner()
         || (gestiona(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto))
+        || (esAdmin() && tareaDelDueno(resource.data.responsableUid) && proyectoAbierto(resource.data.proyecto))
         || esYo(resource.data.responsableUid)
         || estoyPermitidoEnProyecto(resource.data.proyecto);
     }

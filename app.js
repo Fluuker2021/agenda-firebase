@@ -1,0 +1,1403 @@
+// Lógica de Agenda de Trabajo (multiusuario, con roles). Usa lo expuesto en
+// window.__fb por el <script> de configuración en index.html.
+const {
+  app, auth, db, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc,
+  deleteDoc, writeBatch, onSnapshot, query, where, orderBy, serverTimestamp, limit,
+  firebaseConfig, VAPID_KEY,
+} = window.__fb;
+
+import {
+  signInWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getMessaging, getToken, onMessage, isSupported as mensajeriaSoportada,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
+import { arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// Se cambia a mano cada vez que se entrega una actualización, para poder
+// confirmar (abriendo el menú ☰) que el despliegue realmente llegó al
+// navegador y no se está viendo una copia vieja en caché.
+const APP_VERSION = "v2026-11-02";
+
+const $ = (id) => document.getElementById(id);
+const DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
+const MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+const pad = (n) => String(n).padStart(2, "0");
+const hoyStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const sumarDias = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const fechaLegible = (iso) => { if (!iso) return "Sin fecha"; const d = new Date(iso + "T00:00:00"); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`; };
+const fechaLarga = (d = new Date()) => `${DIAS_ES[(d.getDay() + 6) % 7].replace(/^./, (c) => c.toUpperCase())}, ${d.getDate()} de ${MESES_ES[d.getMonth()]} de ${d.getFullYear()}`;
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const iniciales = (nombre) => (nombre || "?").trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() || "").join("");
+
+// Estados de asistencia que cualquier persona (jefe o personal) puede marcar
+// sobre sí misma en la pestaña "Asistencia", y que se ven junto a su nombre
+// en "Equipo".
+const ESTADOS_ASISTENCIA = {
+  oficina: { emoji: "🏢", etiqueta: "En oficina" },
+  campo: { emoji: "⛏️", etiqueta: "En campo" },
+  examen_medico: { emoji: "🏥", etiqueta: "Examen médico" },
+  remoto: { emoji: "🏠", etiqueta: "Remoto" },
+  ausente: { emoji: "🔴", etiqueta: "Ausente" },
+};
+
+// Catálogo de proyectos para elegir al crear/editar una tarea (en vez de
+// escribirlo a mano). Ahora vive en Firestore (colección "proyectos", ver
+// cargarProyectos()) para que el owner los agregue/quite desde
+// Administración; esta lista es solo el "sembrado" inicial que se usa si
+// todavía no has guardado ningún proyecto ahí (para no dejar el selector
+// vacío mientras tanto), y la misma que ofrece el botón "Usar este catálogo"
+// en Administración.
+const PROYECTOS_POR_DEFECTO = [
+  "CHINALCO", "HUDBAY", "TÍA MARÍA - COLECTORES", "TÍA MARÍA - SUPRESORES",
+  "ANTAMINA", "CERRO VERDE", "VELADERO 1", "VELADERO 2",
+  "FAMESA MASA PIROTECNICA", "FAMESA MASA RETARDO", "FAMESA CONECTORES",
+  "NEXA", "NORCOBRE", "PROMET", "BUENAVENTURA",
+].sort((a, b) => a.localeCompare(b, "es"));
+
+// Catálogo "en vivo": lista de nombres a mostrar en los selectores, y mapa
+// nombre -> { soloDueno: boolean } con la info de visibilidad de cada uno.
+// Se llenan en cargarProyectos() y se refrescan cuando el owner edita algo
+// en Administración.
+let PROYECTOS = [...PROYECTOS_POR_DEFECTO];
+let proyectosInfo = new Map();
+
+// CSV sencillo (soporta campos entre comillas con comas/comillas escapadas)
+// usado por la importación de tareas en la Administración.
+function parsearCSV(texto) {
+  const filas = [];
+  let fila = [], campo = "", entreComillas = false;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (entreComillas) {
+      if (c === '"' && texto[i + 1] === '"') { campo += '"'; i++; }
+      else if (c === '"') { entreComillas = false; }
+      else campo += c;
+    } else if (c === '"') { entreComillas = true; }
+    else if (c === ",") { fila.push(campo); campo = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && texto[i + 1] === "\n") i++;
+      fila.push(campo); campo = ""; filas.push(fila); fila = [];
+    } else campo += c;
+  }
+  if (campo !== "" || fila.length) { fila.push(campo); filas.push(fila); }
+  return filas.filter((f) => !(f.length === 1 && f[0].trim() === ""));
+}
+
+function flash(texto, tipo = "success") {
+  const cont = $("mensajes");
+  const el = document.createElement("div");
+  el.className = `mensaje ${tipo}`;
+  el.textContent = texto;
+  cont.appendChild(el);
+  setTimeout(() => { el.classList.add("oculto"); setTimeout(() => el.remove(), 400); }, 3200);
+}
+
+// Los onSnapshot() de abajo, antes de esto, no tenían un callback de error:
+// si las reglas de Firestore negaban una consulta (ej. "permission-denied"),
+// la lista se quedaba vacía en silencio, sin ningún aviso — y eso se veía
+// igual que "no tengo tareas". Ahora se muestra un mensaje claro en pantalla
+// y el detalle en la consola, para poder distinguir un problema de permisos
+// de una lista legítimamente vacía.
+function manejarErrorConsulta(dondeTexto) {
+  return (e) => {
+    console.error(`Error cargando "${dondeTexto}":`, e);
+    flash(`No se pudo cargar "${dondeTexto}" (${e.code || "error"}). Avisa al administrador general.`, "error");
+  };
+}
+
+// ---------------------------------------------------------------------
+// Estado
+// ---------------------------------------------------------------------
+let miUid = null;
+let miPerfil = null; // {nombre, email, rol, gestionados, telefono, activo}
+let usuariosCache = new Map(); // uid -> {id, ...datos}
+let vistaActual = "hoy";
+let filtroResponsablePreset = null; // uid a preseleccionar al entrar a "Todas las tareas" (ver vistaEquipo)
+const unsubs = {}; // listeners activos por vista, para apagarlos al cambiar
+
+function soyOwner() { return miPerfil?.rol === "owner"; }
+function soyAdmin() { return miPerfil?.rol === "admin"; }
+function puedoAdministrar() { return soyOwner() || soyAdmin(); }
+
+// uids que puedo ver/gestionar como responsables (incluye el mío propio).
+function misUidsEnAlcance() {
+  if (soyOwner()) return [...usuariosCache.keys()];
+  if (soyAdmin()) return [miUid, ...(miPerfil.gestionados || [])];
+  return [miUid];
+}
+
+function apagarListener(clave) { if (unsubs[clave]) { unsubs[clave](); delete unsubs[clave]; } }
+function apagarTodosMenos(clave) { Object.keys(unsubs).forEach((k) => { if (k !== clave) apagarListener(k); }); }
+
+// ---------------------------------------------------------------------
+// Login / sesión
+// ---------------------------------------------------------------------
+setPersistence(auth, browserLocalPersistence).catch(() => {});
+
+$("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("lErr").textContent = "";
+  $("lBtn").disabled = true;
+  try {
+    await signInWithEmailAndPassword(auth, $("lEmail").value.trim(), $("lPass").value);
+  } catch (err) {
+    $("lErr").textContent = /invalid|wrong|not-found|credential/.test(err.code || "")
+      ? "Correo o contraseña incorrectos."
+      : "No se pudo iniciar sesión. Revisa tu conexión.";
+  } finally {
+    $("lBtn").disabled = false;
+  }
+});
+
+$("btnAvatar").addEventListener("click", async () => {
+  if (confirm("¿Cerrar sesión?")) await signOut(auth);
+});
+
+auth.onAuthStateChanged(async (u) => {
+  miUid = u ? u.uid : null;
+  apagarTodosMenos(null);
+  // Si alguien cierra sesión y otra persona entra en el mismo dispositivo,
+  // que no quede nada de la sesión anterior dando vueltas en los modales.
+  $("modalTarea").classList.remove("visible");
+  $("modalDia").classList.remove("visible");
+  $("modalEliminarSerie").classList.remove("visible");
+  $("modalDiaLista").innerHTML = "";
+  $("menuLista").classList.remove("visible");
+  $("btnMenu").classList.remove("abierto");
+  if (!u) {
+    $("loginView").hidden = false;
+    $("appView").hidden = true;
+    return;
+  }
+  // Si el documento usuarios/{uid} todavía no existe, las reglas de
+  // seguridad niegan la lectura (no solo devuelven "no existe"), así que
+  // hay que atrapar también ese error de permisos y no solo !exists().
+  let snap;
+  try {
+    snap = await getDoc(doc(db, "usuarios", u.uid));
+  } catch (e) {
+    $("loginView").hidden = false;
+    $("appView").hidden = true;
+    $("lErr").textContent = "Tu cuenta todavía no está configurada en la app. Pide al administrador que te agregue.";
+    await signOut(auth);
+    return;
+  }
+  if (!snap.exists()) {
+    $("loginView").hidden = false;
+    $("appView").hidden = true;
+    $("lErr").textContent = "Tu cuenta todavía no está configurada en la app. Pide al administrador que te agregue.";
+    await signOut(auth);
+    return;
+  }
+  miPerfil = { id: u.uid, ...snap.data() };
+  if (miPerfil.activo === false) {
+    $("lErr").textContent = "Tu cuenta está desactivada. Habla con el administrador.";
+    await signOut(auth);
+    return;
+  }
+  $("loginView").hidden = true;
+  $("appView").hidden = false;
+  $("avatarUsuario").textContent = iniciales(miPerfil.nombre);
+  $("avatarUsuario").title = `${miPerfil.nombre} · ${miPerfil.email || ""}`;
+  await cargarUsuarios();
+  await cargarProyectos();
+  construirNav();
+  iniciarNotificaciones();
+  irA("hoy");
+});
+
+// ---------------------------------------------------------------------
+// Caché de usuarios (para mostrar nombres y poblar selects). Las reglas
+// solo dejan leer los que están en mi alcance, así que esta consulta ya
+// viene naturalmente filtrada por rol.
+// ---------------------------------------------------------------------
+async function cargarUsuarios() {
+  usuariosCache.clear();
+  usuariosCache.set(miUid, miPerfil);
+  if (soyOwner()) {
+    const snap = await getDocs(collection(db, "usuarios"));
+    snap.forEach((d) => usuariosCache.set(d.id, { id: d.id, ...d.data() }));
+  } else if (soyAdmin()) {
+    for (const uid of miPerfil.gestionados || []) {
+      const s = await getDoc(doc(db, "usuarios", uid));
+      if (s.exists()) usuariosCache.set(uid, { id: uid, ...s.data() });
+    }
+  }
+}
+function nombreDe(uid) { return usuariosCache.get(uid)?.nombre || "—"; }
+
+// ---------------------------------------------------------------------
+// Caché de proyectos (catálogo + quién tiene acceso especial a cada uno).
+// La regla de Firestore deja leer esta colección a cualquiera que inició
+// sesión, porque la necesitan los selectores de "Nueva tarea" y el filtro
+// de "Todas las tareas". Si todavía no hay ningún proyecto guardado (recién
+// instalaste esta función), se usa el catálogo por defecto mientras tanto.
+// ---------------------------------------------------------------------
+async function cargarProyectos() {
+  try {
+    const snap = await getDocs(collection(db, "proyectos"));
+    proyectosInfo.clear();
+    snap.forEach((d) => proyectosInfo.set(d.id, d.data()));
+    PROYECTOS = proyectosInfo.size
+      ? [...proyectosInfo.keys()].sort((a, b) => a.localeCompare(b, "es"))
+      : [...PROYECTOS_POR_DEFECTO];
+  } catch (e) {
+    // Si la colección todavía no existe o las reglas no se han actualizado,
+    // seguimos con el catálogo por defecto en vez de dejar el selector vacío.
+    PROYECTOS = [...PROYECTOS_POR_DEFECTO];
+  }
+}
+function proyectoRestringido(nombre) {
+  const info = proyectosInfo.get(nombre);
+  return !!(info && info.soloDueno);
+}
+
+// ---------------------------------------------------------------------
+// Navegación
+// ---------------------------------------------------------------------
+let pestañasDisponibles = [["hoy", "Hoy"]];
+
+function construirNav() {
+  const tabs = [["hoy", "Hoy"], ["asistencia", "Asistencia"]];
+  if (puedoAdministrar()) {
+    tabs.push(["todas", "Todas las tareas"], ["calendario", "Calendario"], ["equipo", "Equipo"]);
+  }
+  if (soyOwner()) tabs.push(["admin", "Administración"]);
+  pestañasDisponibles = tabs;
+  // Versión visible al pie del menú: sirve para confirmar, con solo abrir el
+  // menú, que el navegador/celular ya está usando la copia más reciente
+  // después de un despliegue (y no una versión vieja en caché).
+  $("menuLista").innerHTML = tabs.map(([id, t]) => `<button type="button" data-vista="${id}">${t}</button>`).join("")
+    + `<div class="version-app">${APP_VERSION}</div>`;
+  $("menuLista").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    irA(b.dataset.vista);
+    cerrarMenu();
+  }));
+}
+function marcarTabActiva() {
+  $("menuLista").querySelectorAll("button").forEach((b) => b.classList.toggle("activa", b.dataset.vista === vistaActual));
+  const actual = pestañasDisponibles.find(([id]) => id === vistaActual);
+  $("menuActualTexto").textContent = actual ? actual[1] : "Menú";
+}
+function abrirMenu() { $("menuLista").classList.add("visible"); $("btnMenu").classList.add("abierto"); }
+function cerrarMenu() { $("menuLista").classList.remove("visible"); $("btnMenu").classList.remove("abierto"); }
+$("btnMenu").addEventListener("click", () => {
+  $("menuLista").classList.contains("visible") ? cerrarMenu() : abrirMenu();
+});
+document.addEventListener("click", (e) => {
+  if (!$("menuNav").contains(e.target)) cerrarMenu();
+});
+function irA(v) { vistaActual = v; marcarTabActiva(); renderizarVista(); }
+
+function renderizarVista() {
+  apagarTodosMenos(null);
+  if (vistaActual === "hoy") return vistaHoy();
+  if (vistaActual === "asistencia") return vistaAsistencia();
+  if (vistaActual === "todas" && puedoAdministrar()) return vistaTodas();
+  if (vistaActual === "calendario" && puedoAdministrar()) return vistaCalendario();
+  if (vistaActual === "equipo" && puedoAdministrar()) return vistaEquipo();
+  if (vistaActual === "admin" && soyOwner()) return vistaAdmin();
+  irA("hoy");
+}
+
+window.__app = { $, flash, hoyStr, sumarDias, fechaLegible, fechaLarga, esc, nombreDe, usuariosCache,
+  soyOwner, soyAdmin, puedoAdministrar, misUidsEnAlcance, miUid, getMiPerfil: () => miPerfil,
+  apagarListener, unsubs };
+
+// ---------------------------------------------------------------------
+// Tarjeta de tarea (HTML) + acciones comunes
+// ---------------------------------------------------------------------
+function puedoAdministrarTarea(t) {
+  if (soyOwner()) return true;
+  if (soyAdmin()) return (miPerfil.gestionados || []).includes(t.responsableUid);
+  return false;
+}
+
+// Quién puede editar el resto de los datos de una tarea (título, proyecto,
+// prioridad, fecha, notas, estado): quien la administra, o la propia persona
+// responsable (para poder actualizarla aunque no gestione a nadie). Nadie de
+// estos puede reasignarla a otra persona salvo quien la administra — ver
+// reglas de Firestore (noReasigna()).
+function puedoEditarTarea(t) {
+  return puedoAdministrarTarea(t) || t.responsableUid === miUid;
+}
+
+function tarjetaTareaHTML(t, { mostrarResponsable, conArrastre }) {
+  const restringido = t.proyecto && proyectoRestringido(t.proyecto);
+  const meta = [`<span class="badge">${restringido ? "🔒 " : ""}${esc(t.proyecto || "Sin proyecto")}</span>`];
+  if (mostrarResponsable) meta.push(esc(nombreDe(t.responsableUid)));
+  meta.push(`prioridad ${t.prioridad}`);
+  meta.push(fechaLegible(t.fechaLimite));
+  const admin = puedoAdministrarTarea(t);
+  const puedeEditar = puedoEditarTarea(t);
+  const puedeArrastrar = !!conArrastre && puedeEditar;
+  return `
+  <div class="tarjeta-tarea prioridad-${t.prioridad}" data-id="${t.id}" ${puedeArrastrar ? 'data-se-puede-arrastrar="1"' : ""}>
+    <div class="info-tarea">
+      <p class="titulo-tarea">${esc(t.titulo)}</p>
+      <p class="meta-tarea">${meta.join(" · ")}</p>
+      ${t.descripcion ? `<p class="descripcion-tarea">${esc(t.descripcion)}</p>` : ""}
+    </div>
+    <div class="acciones-tarea">
+      <select class="selector-estado estado-${t.estado}" data-accion="estado" data-id="${t.id}" ${puedeEditar ? "" : "disabled"}>
+        <option value="pendiente" ${t.estado === "pendiente" ? "selected" : ""}>Pendiente</option>
+        <option value="en_progreso" ${t.estado === "en_progreso" ? "selected" : ""}>En progreso</option>
+        <option value="detenido_externo" ${t.estado === "detenido_externo" ? "selected" : ""}>Detenido (otra área)</option>
+        <option value="detenido_dsm" ${t.estado === "detenido_dsm" ? "selected" : ""}>Detenido (DSM)</option>
+        <option value="completado" ${t.estado === "completado" ? "selected" : ""}>Completado</option>
+      </select>
+      ${puedeEditar ? `<button type="button" class="icono-accion" data-accion="editar" data-id="${t.id}" title="Editar">⚙️</button>` : ""}
+      ${admin ? `<button type="button" class="icono-accion" data-accion="eliminar" data-id="${t.id}" title="Eliminar">✕</button>` : ""}
+    </div>
+  </div>`;
+}
+
+// delega los clics/cambios de cualquier lista de tarjetas renderizada
+function conectarAccionesTareas(contenedorEl, tareasPorId) {
+  contenedorEl.querySelectorAll('[data-accion="estado"]').forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      const id = sel.dataset.id;
+      const nuevo = sel.value;
+      try {
+        if (nuevo === "completado") {
+          await updateDoc(doc(db, "tareas", id), { estado: nuevo, completadoEn: serverTimestamp(), actualizadoEn: serverTimestamp() });
+          flash("Tarea completada. Queda guardada en el historial de abajo.");
+        } else {
+          await updateDoc(doc(db, "tareas", id), { estado: nuevo, actualizadoEn: serverTimestamp() });
+        }
+      } catch (e) { flash("No se pudo actualizar (¿permisos?).", "error"); }
+    });
+  });
+  contenedorEl.querySelectorAll('[data-accion="editar"]').forEach((b) => {
+    b.addEventListener("click", () => abrirModalTarea(tareasPorId.get(b.dataset.id)));
+  });
+  contenedorEl.querySelectorAll('[data-accion="eliminar"]').forEach((b) => {
+    b.addEventListener("click", async () => {
+      const t = tareasPorId.get(b.dataset.id);
+      if (t.loteId) {
+        mostrarModalEliminarSerie(t);
+        return;
+      }
+      if (!confirm("¿Eliminar esta tarea?")) return;
+      try { await deleteDoc(doc(db, "tareas", t.id)); flash("Tarea eliminada."); }
+      catch (e) { flash("No se pudo eliminar (¿permisos?).", "error"); }
+    });
+  });
+}
+
+// Las tareas completadas ya no se borran (ver historial más abajo): hay que
+// dejarlas afuera de las listas normales por fecha a propósito.
+function agruparPorFecha(tareasConTodo) {
+  const tareas = tareasConTodo.filter((t) => t.estado !== "completado");
+  const hoy = hoyStr();
+  const vencidas = [], deHoy = [], proximas = [], futuras = [], sinFecha = [];
+  const limite = sumarDias(hoy, 7);
+  for (const t of tareas) {
+    if (!t.fechaLimite) { sinFecha.push(t); continue; }
+    if (t.fechaLimite < hoy) vencidas.push(t);
+    else if (t.fechaLimite === hoy) deHoy.push(t);
+    else if (t.fechaLimite <= limite) proximas.push(t);
+    else futuras.push(t);
+  }
+  const ordenar = (a) => a.sort((x, y) => (x.orden ?? 9e9) - (y.orden ?? 9e9) || (x.fechaLimite || "").localeCompare(y.fechaLimite || ""));
+  return { vencidas: ordenar(vencidas), deHoy: ordenar(deHoy), proximas: ordenar(proximas), futuras: ordenar(futuras), sinFecha: ordenar(sinFecha) };
+}
+
+// ---------------------------------------------------------------------
+// Historial de completadas — tarjeta de solo lectura (sin selector de
+// estado) con un botón para borrarla definitivamente si ya no hace falta.
+// ---------------------------------------------------------------------
+function fechaCompletado(t) {
+  const ts = t.completadoEn;
+  if (!ts) return "";
+  const d = typeof ts.toDate === "function" ? ts.toDate() : null;
+  if (!d) return "";
+  return d.toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function filaHistorialHTML(t, mostrarResponsable) {
+  const meta = [`<span class="badge">${esc(t.proyecto || "Sin proyecto")}</span>`];
+  if (mostrarResponsable) meta.push(esc(nombreDe(t.responsableUid)));
+  const cuando = fechaCompletado(t);
+  if (cuando) meta.push(`completada el ${cuando}`);
+  const puedeBorrar = puedoEditarTarea(t) || puedoAdministrarTarea(t);
+  return `
+  <div class="tarjeta-tarea tarjeta-historial" data-id="${t.id}">
+    <div class="info-tarea">
+      <p class="titulo-tarea">${esc(t.titulo)}</p>
+      <p class="meta-tarea">${meta.join(" · ")}</p>
+    </div>
+    <div class="acciones-tarea">
+      ${puedeBorrar ? `<button type="button" class="icono-accion" data-accion="borrar-historial" data-id="${t.id}" title="Eliminar definitivamente">✕</button>` : ""}
+    </div>
+  </div>`;
+}
+
+function conectarHistorial(contenedorEl, tareasPorId) {
+  contenedorEl.querySelectorAll('[data-accion="borrar-historial"]').forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm("¿Eliminar esta tarea completada del historial? No se puede deshacer.")) return;
+      try { await deleteDoc(doc(db, "tareas", b.dataset.id)); flash("Eliminada del historial."); }
+      catch (e) { flash("No se pudo eliminar (¿permisos?).", "error"); }
+    });
+  });
+}
+
+// ids de secciones que la persona cerró a mano — se recuerda mientras dura
+// la sesión (sobrevive a los refrescos en tiempo real de onSnapshot, que si
+// no, las volverían a abrir solas en cada cambio).
+// El historial de completadas arranca cerrado por defecto para no saturar
+// la vista; el resto de secciones arrancan abiertas, como hasta ahora.
+const seccionesColapsadas = new Set(["secCompletadas", "tCompletadas"]);
+
+function seccionHTML(id, titulo, emoji, lista, mostrarResponsable, renderizador, arrastrable) {
+  if (lista.length === 0) return "";
+  const cerrada = seccionesColapsadas.has(id);
+  const pintarFila = renderizador || ((t) => tarjetaTareaHTML(t, { mostrarResponsable, conArrastre: !!arrastrable }));
+  return `
+  <div class="seccion">
+    <button type="button" class="seccion-titulo" data-toggle="${id}">
+      <span class="seccion-flecha${cerrada ? " cerrada" : ""}">▾</span>
+      ${emoji} ${titulo} <span class="contador">(${lista.length})</span>
+    </button>
+    <div id="${id}" class="seccion-lista${cerrada ? " oculta" : ""}"${arrastrable ? ' data-arrastrable="1"' : ""}>${lista.map((t) => pintarFila(t)).join("")}</div>
+  </div>`;
+}
+
+// delega el clic en los encabezados de sección para abrir/cerrar cada grupo
+function conectarSecciones(contenedorEl) {
+  contenedorEl.querySelectorAll("[data-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.toggle;
+      const lista = document.getElementById(id);
+      const flecha = btn.querySelector(".seccion-flecha");
+      if (seccionesColapsadas.has(id)) {
+        seccionesColapsadas.delete(id);
+        lista.classList.remove("oculta");
+        flecha.classList.remove("cerrada");
+      } else {
+        seccionesColapsadas.add(id);
+        lista.classList.add("oculta");
+        flecha.classList.add("cerrada");
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------
+// Arrastrar para reordenar — cada quien puede acomodar a su gusto el orden
+// de las tareas dentro de un mismo grupo (ej. las 4 "Vencidas"). No hace
+// falta ningún botón aparte: se mantiene presionado cualquier espacio de la
+// tarjeta (menos los botones/selector de la derecha, que deben seguir
+// respondiendo al toque normal) y, pasado un pequeño instante sin soltar,
+// se activa el arrastre.
+//
+// Celulares (instalado como app): estas tarjetas usan touch-action:none
+// (ver CSS) porque, una vez que el dedo empieza a tocar, el navegador
+// decide YA en ese instante si va a dejar que la página haga scroll solo
+// con el dedo, sin volver a preguntarle a este código — cambiarlo recién
+// cuando se activa el arrastre (como se hacía antes) llega demasiado tarde
+// y la pantalla se termina moviendo sola en vez de la tarjeta. Por eso,
+// mientras se espera a ver si es una pulsación larga, si la persona mueve
+// el dedo antes de tiempo, este código reproduce el scroll a mano
+// (window.scrollBy) seguiendo el dedo, imitando el scroll normal.
+// Se guarda en el campo "orden" de cada tarea, que ya se usaba para las
+// series en lote; el historial de completadas no se puede reordenar.
+// Funciona con mouse y con el dedo (Pointer Events).
+// ---------------------------------------------------------------------
+const ESPERA_ARRASTRE_MS = 450;
+const TOLERANCIA_ARRASTRE_PX = 10;
+
+function desplazarPagina(dy) {
+  if (typeof window.scrollBy === "function") window.scrollBy(0, dy);
+  else if (document.scrollingElement) document.scrollingElement.scrollTop += dy;
+}
+
+function activarArrastre(contenedorEl, tareasPorId) {
+  contenedorEl.querySelectorAll('.seccion-lista[data-arrastrable="1"]').forEach((lista) => {
+    lista.querySelectorAll('.tarjeta-tarea[data-se-puede-arrastrar="1"]').forEach((tarjeta) => {
+      let temporizador = null;
+      let activo = false; // ya se activó el modo "reordenar"
+      let haciendoScroll = false; // se decidió que es un gesto para desplazar la página
+      let origenY = 0, ultimoY = 0;
+
+      // Refuerzo, además del CSS (user-select:none): algunos navegadores
+      // igual disparan el inicio de una selección de texto al mantener
+      // presionado, así que se cancela también a nivel de evento.
+      tarjeta.addEventListener("selectstart", (ev) => ev.preventDefault());
+      tarjeta.addEventListener("contextmenu", (ev) => { if (activo) ev.preventDefault(); });
+
+      const cancelarEspera = () => { if (temporizador) { clearTimeout(temporizador); temporizador = null; } };
+
+      const reordenar = (ev2) => {
+        const y = ev2.clientY;
+        const otras = [...lista.querySelectorAll(".tarjeta-tarea")].filter((el) => el !== tarjeta);
+        let destino = null;
+        for (const el of otras) {
+          const rect = el.getBoundingClientRect();
+          if (y < rect.top + rect.height / 2) { destino = el; break; }
+        }
+        if (destino) lista.insertBefore(tarjeta, destino);
+        else lista.appendChild(tarjeta);
+      };
+
+      const mover = (ev2) => {
+        ev2.preventDefault();
+        if (activo) { reordenar(ev2); return; }
+        if (haciendoScroll) {
+          desplazarPagina(ultimoY - ev2.clientY);
+          ultimoY = ev2.clientY;
+          return;
+        }
+        if (!temporizador) return;
+        if (Math.abs(ev2.clientY - origenY) <= TOLERANCIA_ARRASTRE_PX) return;
+        // Se movió antes de completarse la espera: no era una pulsación
+        // larga, sino que quería hacer scroll — a partir de aquí este
+        // código se encarga de desplazar la página a mano (ver nota arriba).
+        cancelarEspera();
+        haciendoScroll = true;
+        ultimoY = ev2.clientY;
+      };
+
+      const terminar = async () => {
+        cancelarEspera();
+        lista.removeEventListener("pointermove", mover);
+        lista.removeEventListener("pointerup", terminar);
+        lista.removeEventListener("pointercancel", terminar);
+        haciendoScroll = false;
+        if (!activo) return;
+        tarjeta.classList.remove("arrastrando");
+        document.body.classList.remove("arrastrando-activo");
+        activo = false;
+        const ids = [...lista.querySelectorAll(".tarjeta-tarea")].map((el) => el.dataset.id);
+        try {
+          const lote = writeBatch(db);
+          let huboCambios = false;
+          ids.forEach((id, i) => {
+            const t = tareasPorId.get(id);
+            if (!t || t.orden === i) return;
+            huboCambios = true;
+            lote.update(doc(db, "tareas", id), { orden: i, actualizadoEn: serverTimestamp() });
+          });
+          if (huboCambios) await lote.commit();
+        } catch (e) { flash("No se pudo guardar el nuevo orden (¿permisos?).", "error"); }
+      };
+
+      tarjeta.addEventListener("pointerdown", (ev) => {
+        // El selector de estado y los botones de editar/eliminar deben
+        // seguir respondiendo al toque normal, sin esperar.
+        if (ev.target.closest(".acciones-tarea")) return;
+        origenY = ev.clientY; ultimoY = ev.clientY;
+        haciendoScroll = false;
+        cancelarEspera();
+        // Importante: la captura del puntero se pide sobre "lista" (que
+        // nunca se mueve en el DOM) desde YA, y no recién al activarse el
+        // arrastre: así no se pierden eventos si el dedo se sale un poco
+        // de la tarjeta mientras se decide si es scroll o arrastre, y más
+        // adelante, cuando sí se reordena, tampoco se pierde la captura
+        // aunque la tarjeta se reinserte en el DOM con insertBefore.
+        lista.setPointerCapture(ev.pointerId);
+        lista.addEventListener("pointermove", mover);
+        lista.addEventListener("pointerup", terminar);
+        lista.addEventListener("pointercancel", terminar);
+        temporizador = setTimeout(() => {
+          temporizador = null;
+          if (haciendoScroll) return; // ya se decidió que era scroll, no activar el arrastre
+          activo = true;
+          tarjeta.classList.add("arrastrando");
+          document.body.classList.add("arrastrando-activo");
+          if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* no crítico */ } }
+        }, ESPERA_ARRASTRE_MS);
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------
+// Vista "Hoy" — mis propias tareas
+// ---------------------------------------------------------------------
+function vistaHoy() {
+  const cont = $("vista");
+  cont.innerHTML = `<h1>Tu agenda de hoy</h1><p class="subtitulo">${fechaLarga()}</p><div id="hoyResumen" class="resumen"></div><div id="hoyListas"></div>`;
+  const q = query(collection(db, "tareas"), where("responsableUid", "==", miUid));
+  unsubs.hoy = onSnapshot(q, (snap) => {
+    const tareas = []; const porId = new Map();
+    snap.forEach((d) => { const t = { id: d.id, ...d.data() }; tareas.push(t); porId.set(d.id, t); });
+    const activas = tareas.filter((t) => t.estado !== "completado");
+    const { vencidas, deHoy, proximas, futuras, sinFecha } = agruparPorFecha(tareas);
+    const completadas = tareas.filter((t) => t.estado === "completado")
+      .sort((a, b) => (b.completadoEn?.toDate?.() ?? 0) - (a.completadoEn?.toDate?.() ?? 0))
+      .slice(0, 50);
+    $("hoyResumen").innerHTML = `
+      <div class="chip"><strong>${vencidas.length}</strong> vencidas</div>
+      <div class="chip"><strong>${deHoy.length}</strong> para hoy</div>
+      <div class="chip"><strong>${activas.length}</strong> pendientes en total</div>`;
+    const html = [
+      seccionHTML("secVencidas", "Vencidas", "🔴", vencidas, false, null, true),
+      seccionHTML("secHoy", "Para hoy", "🟢", deHoy, false, null, true),
+      seccionHTML("secProximas", "Próximos 7 días", "📅", proximas, false, null, true),
+      seccionHTML("secFuturas", "Más adelante", "🗓️", futuras, false, null, true),
+      seccionHTML("secSinFecha", "Sin fecha", "📋", sinFecha, false, null, true),
+      seccionHTML("secCompletadas", "Historial de completadas", "✅", completadas, false, (t) => filaHistorialHTML(t, false)),
+    ].join("");
+    $("hoyListas").innerHTML = html || '<p class="vacio">No tienes tareas pendientes. 🎉</p>';
+    conectarAccionesTareas($("hoyListas"), porId);
+    conectarHistorial($("hoyListas"), porId);
+    conectarSecciones($("hoyListas"));
+    activarArrastre($("hoyListas"), porId);
+  }, manejarErrorConsulta("Hoy"));
+}
+
+// ---------------------------------------------------------------------
+// Modal de tarea (crear / editar) + repetición en lote
+// ---------------------------------------------------------------------
+let tareaEditando = null;
+
+// forzarIncluirUid: cuando se edita una tarea que no se puede reasignar
+// (ver abrirModalTarea), hay que mostrar a la persona responsable aunque no
+// esté dentro de "a quién gestiono", para no perder ese dato en el selector.
+function poblarSelectResponsable(uidSeleccionado, forzarIncluirUid) {
+  const sel = $("tResponsable");
+  const uids = misUidsEnAlcance();
+  const lista = forzarIncluirUid && !uids.includes(forzarIncluirUid) ? [forzarIncluirUid, ...uids] : uids;
+  sel.innerHTML = lista.map((uid) =>
+    `<option value="${uid}" ${uid === uidSeleccionado ? "selected" : ""}>${esc(nombreDe(uid))}${uid === miUid ? " (yo)" : ""}</option>`
+  ).join("");
+}
+
+// Si la tarea que se está editando tiene un proyecto que ya no está en el
+// catálogo (ej. datos migrados de la agenda anterior con otro nombre), lo
+// agregamos igual como opción para no perder ni cambiar ese dato sin querer.
+function poblarSelectProyecto(proyectoActual) {
+  const sel = $("tProyecto");
+  const extra = proyectoActual && !PROYECTOS.includes(proyectoActual) ? [proyectoActual] : [];
+  const opciones = [...extra, ...PROYECTOS];
+  sel.innerHTML = `<option value="">Sin proyecto</option>` +
+    opciones.map((p) => `<option value="${esc(p)}" ${p === proyectoActual ? "selected" : ""}>${esc(p)}</option>`).join("");
+}
+
+function abrirModalTarea(t) {
+  tareaEditando = t || null;
+  $("tErr").textContent = "";
+  $("formTarea").reset();
+  $("modalTareaTitulo").textContent = t ? "Editar tarea" : "Nueva tarea";
+  $("tTareaId").value = t?.id || "";
+  poblarSelectProyecto(t?.proyecto || "");
+  $("tTitulo").value = t?.titulo || "";
+  // Quien solo puede editar por ser el propio responsable, o por tener
+  // acceso especial al proyecto (sin administrar a esa persona), puede
+  // actualizar el resto de los datos pero NO reasignar la tarea a alguien
+  // más — eso coincide con lo que permiten las reglas de Firestore.
+  const puedeReasignar = !t || puedoAdministrarTarea(t);
+  poblarSelectResponsable(t?.responsableUid || miUid, puedeReasignar ? null : t.responsableUid);
+  $("tResponsable").disabled = !puedeReasignar;
+  $("tResponsableHint").hidden = puedeReasignar;
+  $("tPrioridad").value = t?.prioridad || "media";
+  $("tFecha").value = t?.fechaLimite || "";
+  $("tNotas").value = t?.descripcion || "";
+  $("tRepetir").checked = false;
+  $("tRepetirHasta").style.display = "none";
+  $("tRepetirHasta").value = "";
+  $("campoRepetir").hidden = !!t; // repetir en lote solo tiene sentido al crear
+  $("modalTarea").classList.add("visible");
+  setTimeout(() => $("tTitulo").focus(), 0);
+}
+function cerrarModalTarea() { $("modalTarea").classList.remove("visible"); tareaEditando = null; }
+
+$("fabNueva").addEventListener("click", () => abrirModalTarea(null));
+$("btnCancelarTarea").addEventListener("click", cerrarModalTarea);
+$("tRepetir").addEventListener("change", () => {
+  $("tRepetirHasta").style.display = $("tRepetir").checked ? "block" : "none";
+});
+
+$("formTarea").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("tErr").textContent = "";
+  const datos = {
+    proyecto: $("tProyecto").value.trim(),
+    titulo: $("tTitulo").value.trim(),
+    // Si el selector está bloqueado (ver abrirModalTarea), se usa el valor
+    // original de la tarea en vez del contenido del select, como refuerzo
+    // además de las reglas de Firestore (que igual lo rechazarían).
+    responsableUid: $("tResponsable").disabled ? tareaEditando.responsableUid : $("tResponsable").value,
+    prioridad: $("tPrioridad").value,
+    fechaLimite: $("tFecha").value || null,
+    descripcion: $("tNotas").value.trim(),
+  };
+  if (!datos.titulo) { $("tErr").textContent = "Escribe un título."; return; }
+  if (!$("tResponsable").disabled && !misUidsEnAlcance().includes(datos.responsableUid)) {
+    $("tErr").textContent = "No puedes asignar tareas a esa persona.";
+    return;
+  }
+  $("btnGuardarTarea").disabled = true;
+  try {
+    if (tareaEditando) {
+      await updateDoc(doc(db, "tareas", tareaEditando.id), { ...datos, actualizadoEn: serverTimestamp() });
+      flash("Tarea actualizada.");
+    } else if ($("tRepetir").checked && $("tRepetirHasta").value) {
+      if (!datos.fechaLimite) {
+        $("tErr").textContent = "Pon una fecha de inicio para poder repetir.";
+        $("btnGuardarTarea").disabled = false;
+        return;
+      }
+      if ($("tRepetirHasta").value < datos.fechaLimite) {
+        $("tErr").textContent = "La fecha final debe ser después de la fecha de inicio.";
+        $("btnGuardarTarea").disabled = false;
+        return;
+      }
+      const loteId = (crypto.randomUUID ? crypto.randomUUID() : `lote-${Date.now()}`);
+      const lote = writeBatch(db);
+      let f = datos.fechaLimite, n = 0;
+      while (f <= $("tRepetirHasta").value && n < 180) { // tope de seguridad
+        const ref = doc(collection(db, "tareas"));
+        lote.set(ref, { ...datos, fechaLimite: f, loteId, estado: "pendiente", creadoPorUid: miUid, creadoEn: serverTimestamp() });
+        f = sumarDias(f, 1);
+        n++;
+      }
+      await lote.commit();
+      flash(`Se crearon ${n} tareas repetidas.`);
+    } else {
+      await addDoc(collection(db, "tareas"), { ...datos, estado: "pendiente", creadoPorUid: miUid, creadoEn: serverTimestamp() });
+      flash("Tarea creada.");
+    }
+    cerrarModalTarea();
+  } catch (err) {
+    $("tErr").textContent = "No se pudo guardar (¿permisos?).";
+  } finally {
+    $("btnGuardarTarea").disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------
+// Eliminar tarea que pertenece a una serie repetida
+// ---------------------------------------------------------------------
+let tareaParaEliminarSerie = null;
+function mostrarModalEliminarSerie(t) {
+  tareaParaEliminarSerie = t;
+  $("modalEliminarSerie").classList.add("visible");
+}
+$("btnCancelarSerie").addEventListener("click", () => {
+  $("modalEliminarSerie").classList.remove("visible");
+  tareaParaEliminarSerie = null;
+});
+$("btnSoloEsta").addEventListener("click", async () => {
+  const t = tareaParaEliminarSerie;
+  $("modalEliminarSerie").classList.remove("visible");
+  if (!t) return;
+  try { await deleteDoc(doc(db, "tareas", t.id)); flash("Tarea eliminada."); }
+  catch (e) { flash("No se pudo eliminar (¿permisos?).", "error"); }
+});
+$("btnTodaSerie").addEventListener("click", async () => {
+  const t = tareaParaEliminarSerie;
+  $("modalEliminarSerie").classList.remove("visible");
+  if (!t || !t.loteId) return;
+  try {
+    const snap = await getDocs(query(collection(db, "tareas"), where("loteId", "==", t.loteId)));
+    const lote = writeBatch(db);
+    snap.forEach((d) => lote.delete(d.ref));
+    await lote.commit();
+    flash(`Se eliminaron ${snap.size} tareas de la serie.`);
+  } catch (e) { flash("No se pudo eliminar la serie (¿permisos?).", "error"); }
+});
+
+// ---------------------------------------------------------------------
+// Notificaciones push reales (como WhatsApp), por FCM. Si el navegador no
+// lo soporta o la persona no da permiso, no pasa nada grave: simplemente no
+// llegan avisos push, pero el resto de la app funciona igual.
+// ---------------------------------------------------------------------
+// Deja constancia en el propio perfil (usuarios/{uid}.pushEstado) de en qué
+// quedó el intento de activar el push, para poder revisarlo desde Firebase
+// Console → Firestore sin necesidad de conectar el celular a una
+// computadora para ver la consola del navegador.
+async function marcarEstadoPush(estado) {
+  try { await updateDoc(doc(db, "usuarios", miUid), { pushEstado: estado, pushEstadoEn: serverTimestamp() }); }
+  catch (e) { /* esto es solo diagnóstico; si falla, no es grave */ }
+}
+
+let notificacionesEnCurso = false;
+async function iniciarNotificaciones() {
+  // Si por algún motivo esta función se llama dos veces casi al mismo tiempo
+  // (ej. el estado de sesión del navegador se dispara más de una vez), dos
+  // intentos de suscripción push simultáneos chocan entre sí y Chrome cancela
+  // uno con "AbortError: Registration failed - push service error". Este
+  // seguro evita que eso pase.
+  if (notificacionesEnCurso) return;
+  notificacionesEnCurso = true;
+  try {
+    if (!("serviceWorker" in navigator)) {
+      console.warn("[push] este navegador no tiene service workers.");
+      return marcarEstadoPush("sin_service_worker");
+    }
+    if (!(await mensajeriaSoportada())) {
+      console.warn("[push] este navegador no soporta notificaciones push de Firebase.");
+      return marcarEstadoPush("navegador_no_soportado");
+    }
+    if (!VAPID_KEY || VAPID_KEY === "PEGAR_AQUI") {
+      console.warn("[push] falta pegar la clave VAPID en index.html.");
+      return marcarEstadoPush("falta_vapid_key");
+    }
+    const permiso = await Notification.requestPermission();
+    if (permiso !== "granted") {
+      console.warn("[push] el usuario no dio permiso de notificaciones:", permiso);
+      return marcarEstadoPush("sin_permiso_" + permiso);
+    }
+    // El service worker (sw.js) ya quedó registrado al cargar la página (ver
+    // index.html). Antes aquí se volvía a registrar con la configuración en
+    // la URL (sw.js?config=...), pero eso podía dejar "atrapada" una copia
+    // vieja del worker sin Firebase inicializado, porque el navegador compara
+    // el CONTENIDO del archivo (no la URL) para decidir si hay algo nuevo que
+    // activar. Ahora reutilizamos el worker ya activo en vez de registrar uno
+    // nuevo.
+    const registro = await navigator.serviceWorker.ready;
+    const messaging = getMessaging(app);
+    const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: registro });
+    if (!token) {
+      console.warn("[push] Firebase no entregó un token (revisa la clave VAPID).");
+      return marcarEstadoPush("sin_token");
+    }
+    await updateDoc(doc(db, "usuarios", miUid), { fcmTokens: arrayUnion(token) });
+    onMessage(messaging, (payload) => {
+      flash(payload.data?.titulo || "Tienes una notificación nueva.");
+    });
+    console.log("[push] notificaciones activadas correctamente.");
+    await marcarEstadoPush("activo");
+  } catch (e) {
+    console.error("[push] no se pudo activar notificaciones push:", e);
+    // e.name trae el tipo de error en texto (ej. "AbortError") que es mucho
+    // más claro que e.code (un número heredado, ej. 20 para AbortError).
+    const detalle = e?.name ? `${e.name}${e.message ? ": " + e.message : ""}` : String(e?.code || e?.message || e);
+    await marcarEstadoPush("error_" + detalle.slice(0, 180));
+  } finally {
+    notificacionesEnCurso = false;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Vista "Asistencia" — cualquiera (jefe o personal) marca dónde está ahora.
+// Se guarda en su propio perfil (usuarios/{uid}.estadoAsistencia) y se ve
+// junto a su nombre en "Equipo".
+// ---------------------------------------------------------------------
+function vistaAsistencia() {
+  const cont = $("vista");
+  const pintar = () => {
+    const actual = miPerfil.estadoAsistencia || "";
+    cont.innerHTML = `
+      <h1>Asistencia</h1>
+      <p class="subtitulo">Marca dónde te encuentras ahora. Tus jefes y administradores lo ven en "Equipo".</p>
+      <div class="asistencia-opciones" id="asistenciaOpciones">
+        ${Object.entries(ESTADOS_ASISTENCIA).map(([clave, info]) => `
+          <button type="button" class="asistencia-opcion ${clave === actual ? "seleccionada" : ""}" data-estado="${clave}">
+            <span class="asistencia-emoji">${info.emoji}</span>
+            <span>${info.etiqueta}</span>
+          </button>`).join("")}
+      </div>
+      <p class="subtitulo" style="margin-top:16px">
+        ${actual ? `Tu estado actual: ${ESTADOS_ASISTENCIA[actual].emoji} ${ESTADOS_ASISTENCIA[actual].etiqueta}` : "Todavía no has marcado tu estado."}
+      </p>`;
+
+    $("asistenciaOpciones").querySelectorAll("[data-estado]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const clave = btn.dataset.estado;
+        try {
+          await updateDoc(doc(db, "usuarios", miUid), { estadoAsistencia: clave, estadoAsistenciaEn: serverTimestamp() });
+          miPerfil.estadoAsistencia = clave;
+          usuariosCache.set(miUid, { ...(usuariosCache.get(miUid) || {}), estadoAsistencia: clave });
+          flash(`Marcado como "${ESTADOS_ASISTENCIA[clave].etiqueta}".`);
+          pintar();
+        } catch (e) { flash("No se pudo guardar tu estado (¿permisos?).", "error"); }
+      });
+    });
+  };
+  pintar();
+}
+
+// ---------------------------------------------------------------------
+// Vista "Todas las tareas" — admin/owner, con filtros
+// ---------------------------------------------------------------------
+function vistaTodas() {
+  const cont = $("vista");
+  const uids = misUidsEnAlcance();
+  const presetUid = filtroResponsablePreset && uids.includes(filtroResponsablePreset) ? filtroResponsablePreset : "";
+  filtroResponsablePreset = null; // se usa una sola vez; si entra de nuevo por el menú, arranca sin filtro
+  cont.innerHTML = `
+    <h1>Todas las tareas</h1>
+    <p class="subtitulo">De las personas que gestionas.</p>
+    <div class="filtros">
+      <select id="filtroResponsable">
+        <option value="" ${presetUid === "" ? "selected" : ""}>Toda tu gente</option>
+        ${uids.map((u) => `<option value="${u}" ${u === presetUid ? "selected" : ""}>${esc(nombreDe(u))}</option>`).join("")}
+      </select>
+      <select id="filtroProyecto">
+        <option value="">Todos los proyectos</option>
+        ${PROYECTOS.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("")}
+      </select>
+      <select id="filtroEstado">
+        <option value="">Todos los estados</option>
+        <option value="pendiente">Pendiente</option>
+        <option value="en_progreso">En progreso</option>
+        <option value="detenido_externo">Detenido (otra área)</option>
+        <option value="detenido_dsm">Detenido (DSM)</option>
+      </select>
+    </div>
+    <div id="todasListas"></div>`;
+
+  const q = soyOwner()
+    ? query(collection(db, "tareas"))
+    : query(collection(db, "tareas"), where("responsableUid", "in", uids));
+
+  unsubs.todas = onSnapshot(q, (snap) => {
+    const tareas = []; const porId = new Map();
+    snap.forEach((d) => { const t = { id: d.id, ...d.data() }; tareas.push(t); porId.set(d.id, t); });
+
+    // Si hay tareas con un proyecto que ya no está en el catálogo (datos
+    // migrados con otro nombre), los agregamos igual como opción de filtro
+    // para poder encontrarlos, sin tocar la lista que ve $("filtroProyecto")
+    // al crear/editar.
+    const proyectosExtra = [...new Set(tareas.map((t) => t.proyecto).filter((p) => p && !PROYECTOS.includes(p)))].sort((a, b) => a.localeCompare(b, "es"));
+    if (proyectosExtra.length && !$("filtroProyecto").dataset.conExtras) {
+      $("filtroProyecto").insertAdjacentHTML("beforeend", proyectosExtra.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join(""));
+      $("filtroProyecto").dataset.conExtras = "1";
+    }
+
+    const repintar = () => {
+      const r = $("filtroResponsable").value, pr = $("filtroProyecto").value, e = $("filtroEstado").value;
+      let base = tareas;
+      if (r) base = base.filter((t) => t.responsableUid === r);
+      if (pr) base = base.filter((t) => t.proyecto === pr);
+      let filtradas = base;
+      if (e) filtradas = filtradas.filter((t) => t.estado === e);
+      const { vencidas, deHoy, proximas, futuras, sinFecha } = agruparPorFecha(filtradas);
+      const completadas = base.filter((t) => t.estado === "completado")
+        .sort((a, b) => (b.completadoEn?.toDate?.() ?? 0) - (a.completadoEn?.toDate?.() ?? 0))
+        .slice(0, 50);
+      const html = [
+        seccionHTML("tVencidas", "Vencidas", "🔴", vencidas, true),
+        seccionHTML("tHoy", "Para hoy", "🟢", deHoy, true),
+        seccionHTML("tProximas", "Próximos 7 días", "📅", proximas, true),
+        seccionHTML("tFuturas", "Más adelante", "🗓️", futuras, true),
+        seccionHTML("tSinFecha", "Sin fecha", "📋", sinFecha, true),
+        seccionHTML("tCompletadas", "Historial de completadas", "✅", completadas, true, (t) => filaHistorialHTML(t, true)),
+      ].join("");
+      $("todasListas").innerHTML = html || '<p class="vacio">No hay tareas con ese filtro.</p>';
+      conectarAccionesTareas($("todasListas"), porId);
+      conectarHistorial($("todasListas"), porId);
+      conectarSecciones($("todasListas"));
+    };
+    repintar();
+    $("filtroResponsable").onchange = repintar;
+    $("filtroProyecto").onchange = repintar;
+    $("filtroEstado").onchange = repintar;
+  }, manejarErrorConsulta("Todas las tareas"));
+}
+
+// ---------------------------------------------------------------------
+// Vista "Calendario" — admin/owner, mes navegable + detalle por día
+// ---------------------------------------------------------------------
+let calAnio = null, calMes = null, calTareas = [];
+
+function vistaCalendario() {
+  const hoy = new Date();
+  if (calAnio == null) { calAnio = hoy.getFullYear(); calMes = hoy.getMonth(); }
+  const cont = $("vista");
+  cont.innerHTML = `
+    <div class="cal-cabecera">
+      <h1 id="calTitulo"></h1>
+      <div class="cal-nav">
+        <button type="button" id="calAnt" title="Mes anterior">‹</button>
+        <button type="button" id="calHoy" title="Ir a hoy">●</button>
+        <button type="button" id="calSig" title="Mes siguiente">›</button>
+      </div>
+    </div>
+    <div class="cal-grid" id="calGrid"></div>`;
+
+  $("calAnt").addEventListener("click", () => { calMes--; if (calMes < 0) { calMes = 11; calAnio--; } dibujarCalendario(); });
+  $("calSig").addEventListener("click", () => { calMes++; if (calMes > 11) { calMes = 0; calAnio++; } dibujarCalendario(); });
+  $("calHoy").addEventListener("click", () => { calAnio = hoy.getFullYear(); calMes = hoy.getMonth(); dibujarCalendario(); });
+
+  const uids = misUidsEnAlcance();
+  const q = soyOwner()
+    ? query(collection(db, "tareas"))
+    : query(collection(db, "tareas"), where("responsableUid", "in", uids));
+  unsubs.calendario = onSnapshot(q, (snap) => {
+    calTareas = [];
+    // las completadas ya no se borran, pero el calendario solo muestra carga
+    // de trabajo pendiente/activa — su historial está en Hoy/Todas.
+    snap.forEach((d) => { const t = { id: d.id, ...d.data() }; if (t.estado !== "completado") calTareas.push(t); });
+    dibujarCalendario();
+  }, manejarErrorConsulta("Calendario"));
+}
+
+function dibujarCalendario() {
+  $("calTitulo").textContent = `${MESES_ES[calMes]} ${calAnio}`;
+  const primerDia = new Date(calAnio, calMes, 1);
+  const offsetLunes = (primerDia.getDay() + 6) % 7; // lunes = 0
+  const diasEnMes = new Date(calAnio, calMes + 1, 0).getDate();
+  const hoy = hoyStr();
+
+  const porDia = new Map();
+  for (const t of calTareas) {
+    if (!t.fechaLimite) continue;
+    if (!porDia.has(t.fechaLimite)) porDia.set(t.fechaLimite, []);
+    porDia.get(t.fechaLimite).push(t);
+  }
+
+  let celdas = ["L", "M", "X", "J", "V", "S", "D"].map((d) => `<div class="cal-diasem">${d}</div>`).join("");
+  for (let i = 0; i < offsetLunes; i++) celdas += `<div class="cal-celda fuera-mes"></div>`;
+  for (let dia = 1; dia <= diasEnMes; dia++) {
+    const iso = `${calAnio}-${pad(calMes + 1)}-${pad(dia)}`;
+    const lista = porDia.get(iso) || [];
+    const mini = lista.slice(0, 3).map((t) => `<div class="cal-mini">${esc(t.titulo)}</div>`).join("");
+    const extra = lista.length > 3 ? `<div class="cal-mini">+${lista.length - 3} más…</div>` : "";
+    celdas += `
+      <div class="cal-celda ${iso === hoy ? "es-hoy" : ""}" data-fecha="${iso}">
+        <div class="cal-numero">${dia}${lista.length ? `<span class="cal-contador">${lista.length}</span>` : ""}</div>
+        ${mini}${extra}
+      </div>`;
+  }
+  $("calGrid").innerHTML = celdas;
+  $("calGrid").querySelectorAll(".cal-celda[data-fecha]").forEach((el) => {
+    el.addEventListener("click", () => abrirModalDia(el.dataset.fecha, porDia.get(el.dataset.fecha) || []));
+  });
+}
+
+function abrirModalDia(iso, lista) {
+  $("modalDiaTitulo").textContent = fechaLegible(iso);
+  const porId = new Map(lista.map((t) => [t.id, t]));
+  const ordenada = lista.slice().sort((a, b) => (a.orden ?? 9e9) - (b.orden ?? 9e9));
+  $("modalDiaLista").innerHTML = ordenada.length
+    ? ordenada.map((t) => tarjetaTareaHTML(t, { mostrarResponsable: true })).join("")
+    : '<p class="vacio">Sin tareas este día.</p>';
+  conectarAccionesTareas($("modalDiaLista"), porId);
+  $("modalDia").classList.add("visible");
+}
+$("btnCerrarDia").addEventListener("click", () => $("modalDia").classList.remove("visible"));
+
+// ---------------------------------------------------------------------
+// Vista "Equipo" — KPIs de carga laboral por persona (admin/owner)
+// ---------------------------------------------------------------------
+function vistaEquipo() {
+  const cont = $("vista");
+  cont.innerHTML = `<h1>Equipo</h1><p class="subtitulo">Disponibilidad y carga de trabajo de cada persona, para repartir tareas con criterio.</p><div class="kpi-grid" id="kpiGrid"></div>`;
+  const uids = misUidsEnAlcance();
+  const q = soyOwner()
+    ? query(collection(db, "tareas"))
+    : query(collection(db, "tareas"), where("responsableUid", "in", uids));
+
+  unsubs.equipo = onSnapshot(q, (snap) => {
+    const tareas = [];
+    snap.forEach((d) => tareas.push({ id: d.id, ...d.data() }));
+    const hoy = hoyStr();
+    const porPersona = new Map(uids.map((u) => [u, { pendiente: 0, en_progreso: 0, vencidas: 0, total: 0, detenido_externo: 0, detenido_dsm: 0 }]));
+    for (const t of tareas) {
+      if (t.estado === "completado") continue; // ya no cuenta carga activa; ver historial
+      const r = porPersona.get(t.responsableUid);
+      if (!r) continue;
+      r.total++;
+      if (t.estado === "pendiente") r.pendiente++;
+      if (t.estado === "en_progreso") r.en_progreso++;
+      if (t.estado === "detenido_externo") r.detenido_externo++;
+      if (t.estado === "detenido_dsm") r.detenido_dsm++;
+      if (t.fechaLimite && t.fechaLimite < hoy) r.vencidas++;
+    }
+    const maxCarga = Math.max(1, ...[...porPersona.values()].map((r) => r.total));
+    $("kpiGrid").innerHTML = uids.map((u) => {
+      const r = porPersona.get(u);
+      const pct = Math.round((r.total / maxCarga) * 100);
+      const nivel = r.total === 0 ? "baja" : pct >= 70 ? "alta" : pct >= 35 ? "media" : "baja";
+      const usr = usuariosCache.get(u) || {};
+      const etiquetaRol = usr.rol === "owner" ? "Administrador general" : usr.rol === "admin" ? "Jefe de área" : "Personal";
+      const estadoInfo = ESTADOS_ASISTENCIA[usr.estadoAsistencia];
+      return `
+        <button type="button" class="kpi-tarjeta kpi-carga-${nivel}" data-uid="${u}" title="Ver todas las tareas de ${esc(usr.nombre || "")}">
+          <div class="kpi-tarjeta-cabecera">
+            <div class="avatar" style="position:static">${iniciales(usr.nombre)}</div>
+            <div>
+              <div class="kpi-nombre">${esc(usr.nombre || "—")}</div>
+              <div class="kpi-rol">${etiquetaRol}</div>
+            </div>
+          </div>
+          <div class="kpi-estado ${estadoInfo ? "" : "kpi-estado-vacio"}">${estadoInfo ? `${estadoInfo.emoji} ${estadoInfo.etiqueta}` : "Sin estado marcado"}</div>
+          <div class="kpi-barra"><div class="kpi-barra-rellena" style="width:${pct}%"></div></div>
+          <div class="kpi-fila"><span>Pendientes</span><b>${r.pendiente}</b></div>
+          <div class="kpi-fila"><span>En progreso</span><b>${r.en_progreso}</b></div>
+          <div class="kpi-fila"><span>Vencidas</span><b style="${r.vencidas ? "color:var(--rojo)" : ""}">${r.vencidas}</b></div>
+          ${r.detenido_externo ? `<div class="kpi-fila"><span>Detenido (otra área)</span><b>${r.detenido_externo}</b></div>` : ""}
+          ${r.detenido_dsm ? `<div class="kpi-fila kpi-fila-alerta"><span>⚠️ Detenido (DSM)</span><b>${r.detenido_dsm}</b></div>` : ""}
+          <div class="kpi-fila kpi-fila-separada"><span>Total asignadas</span><b>${r.total}</b></div>
+        </button>`;
+    }).join("");
+    $("kpiGrid").querySelectorAll("[data-uid]").forEach((el) => {
+      el.addEventListener("click", () => {
+        filtroResponsablePreset = el.dataset.uid;
+        irA("todas");
+      });
+    });
+  }, manejarErrorConsulta("Equipo"));
+}
+
+// ---------------------------------------------------------------------
+// Vista "Administración" — solo owner: altas, roles y a quién gestiona
+// cada jefe de área. (Las cuentas de acceso se crean en Firebase Console
+// → Authentication; aquí solo se completa el perfil con ese UID.)
+// ---------------------------------------------------------------------
+function vistaAdmin() {
+  const cont = $("vista");
+  cont.innerHTML = `
+    <h1>Administración</h1>
+    <p class="subtitulo">Para dar acceso a alguien nuevo, créalo primero en Firebase Console → Authentication, copia su UID y complétalo aquí.</p>
+    <div class="form-inline">
+      <div class="campo"><label>UID (de Firebase Auth)</label><input id="nuUid" placeholder="Pega el UID"></div>
+      <div class="campo"><label>Nombre</label><input id="nuNombre"></div>
+      <div class="campo"><label>Correo</label><input id="nuEmail" type="email"></div>
+      <div class="campo"><label>Rol</label>
+        <select id="nuRol">
+          <option value="staff">Personal</option>
+          <option value="admin">Jefe de área</option>
+          <option value="owner">Administrador general</option>
+        </select>
+      </div>
+      <button type="button" class="boton-primario" id="btnCrearUsuario">Agregar</button>
+    </div>
+    <p class="error" id="nuErr"></p>
+    <div id="listaUsuarios"></div>
+
+    <h2 style="margin-top:28px">Proyectos</h2>
+    <p class="subtitulo" style="margin-bottom:10px">
+      Los proyectos que aparecen al crear una tarea. Cada uno tiene 2 opciones de visibilidad: "para todos" (cualquier
+      jefe de área ve las tareas de su gente sin importar el proyecto, como siempre) o "únicamente para mí" (solo tú
+      ves/administras esas tareas, ej. para un proyecto confidencial como GERENCIA).
+    </p>
+    <div class="form-inline">
+      <div class="campo"><label>Nuevo proyecto</label><input id="nuProyecto" placeholder="ej. GERENCIA"></div>
+      <button type="button" class="boton-primario" id="btnCrearProyecto">Agregar</button>
+      <button type="button" class="boton-secundario" id="btnSembrarProyectos" hidden>Usar catálogo de 15 proyectos</button>
+    </div>
+    <p class="error" id="pyErr"></p>
+    <div id="listaProyectos"></div>
+
+    <div class="importar-caja">
+      <h2>Importar tareas (migración desde la agenda anterior)</h2>
+      <p class="subtitulo" style="margin-bottom:10px">
+        Pega aquí filas en formato CSV con columnas <code>proyecto,titulo,responsable_correo,prioridad,fecha_limite,notas</code>
+        (una tarea por línea; <code>prioridad</code> es alta/media/baja y <code>fecha_limite</code> va como AAAA-MM-DD; los dos últimos campos son opcionales).
+        El correo debe coincidir con el de alguien ya agregado arriba.
+      </p>
+      <textarea id="txtImportar" placeholder="proyecto,titulo,responsable_correo,prioridad,fecha_limite,notas&#10;Antamina,Revisar informe,staff1@test.com,alta,2026-11-01,"></textarea>
+      <div class="modal-botones" style="justify-content:flex-start;margin-top:10px">
+        <button type="button" class="boton-primario" id="btnImportar">Importar</button>
+      </div>
+      <div class="importar-resultado" id="resImportar"></div>
+    </div>`;
+
+  $("btnCrearUsuario").addEventListener("click", async () => {
+    $("nuErr").textContent = "";
+    const uid = $("nuUid").value.trim(), nombre = $("nuNombre").value.trim(), email = $("nuEmail").value.trim(), rol = $("nuRol").value;
+    if (!uid || !nombre || !email) { $("nuErr").textContent = "Completa UID, nombre y correo."; return; }
+    try {
+      await setDoc(doc(db, "usuarios", uid), { nombre, email, rol, gestionados: [], activo: true, creadoEn: serverTimestamp() });
+      flash("Usuario agregado.");
+      $("nuUid").value = ""; $("nuNombre").value = ""; $("nuEmail").value = "";
+    } catch (e) { $("nuErr").textContent = "No se pudo guardar (¿permisos?)."; }
+  });
+
+  $("btnCrearProyecto").addEventListener("click", async () => {
+    $("pyErr").textContent = "";
+    const nombre = $("nuProyecto").value.trim().toUpperCase();
+    if (!nombre) { $("pyErr").textContent = "Escribe un nombre de proyecto."; return; }
+    try {
+      await setDoc(doc(db, "proyectos", nombre), { soloDueno: false, creadoPorUid: miUid, creadoEn: serverTimestamp() });
+      flash("Proyecto agregado.");
+      $("nuProyecto").value = "";
+    } catch (e) { $("pyErr").textContent = "No se pudo guardar (¿permisos?)."; }
+  });
+
+  $("btnSembrarProyectos").addEventListener("click", async () => {
+    try {
+      const lote = writeBatch(db);
+      for (const nombre of PROYECTOS_POR_DEFECTO) {
+        lote.set(doc(db, "proyectos", nombre), { soloDueno: false, creadoPorUid: miUid, creadoEn: serverTimestamp() });
+      }
+      await lote.commit();
+      flash("Se agregó el catálogo de 15 proyectos.");
+    } catch (e) { $("pyErr").textContent = "No se pudo sembrar el catálogo (¿permisos?)."; }
+  });
+
+  $("btnImportar").addEventListener("click", async () => {
+    const texto = $("txtImportar").value.trim();
+    const resEl = $("resImportar");
+    resEl.textContent = "";
+    if (!texto) { resEl.textContent = "Pega primero las filas a importar."; return; }
+
+    const filas = parsearCSV(texto);
+    // si la primera fila es la cabecera de ejemplo, se ignora
+    const primera = (filas[0] || []).map((c) => c.toLowerCase().trim());
+    if (primera[0] === "proyecto" && primera[1] === "titulo") filas.shift();
+
+    const porCorreo = new Map();
+    usuariosCache.forEach((u) => { if (u.email) porCorreo.set(u.email.toLowerCase().trim(), u.id); });
+
+    const lote = writeBatch(db);
+    let importadas = 0;
+    const omitidas = [];
+    for (const [i, cols] of filas.entries()) {
+      if (cols.length === 1 && !cols[0]) continue; // línea vacía
+      const [proyecto = "", titulo = "", correo = "", prioridadRaw = "", fechaRaw = "", notas = ""] = cols;
+      const uid = porCorreo.get((correo || "").toLowerCase().trim());
+      if (!titulo.trim()) { omitidas.push(`Fila ${i + 1}: sin título.`); continue; }
+      if (!uid) { omitidas.push(`Fila ${i + 1} ("${titulo.trim()}"): no se encontró a nadie con el correo "${correo}".`); continue; }
+      const prioridad = ["alta", "media", "baja"].includes(prioridadRaw.trim().toLowerCase()) ? prioridadRaw.trim().toLowerCase() : "media";
+      const fechaLimite = /^\d{4}-\d{2}-\d{2}$/.test(fechaRaw.trim()) ? fechaRaw.trim() : null;
+      const ref = doc(collection(db, "tareas"));
+      lote.set(ref, {
+        proyecto: proyecto.trim(), titulo: titulo.trim(), responsableUid: uid, prioridad, fechaLimite,
+        descripcion: notas.trim(), estado: "pendiente", creadoPorUid: miUid, creadoEn: serverTimestamp(),
+      });
+      importadas++;
+    }
+    if (importadas === 0) {
+      resEl.textContent = "No se importó nada.\n" + omitidas.join("\n");
+      return;
+    }
+    try {
+      await lote.commit();
+      resEl.textContent = `Se importaron ${importadas} tareas.` + (omitidas.length ? `\nSe omitieron ${omitidas.length}:\n` + omitidas.join("\n") : "");
+      $("txtImportar").value = "";
+      flash(`Se importaron ${importadas} tareas.`);
+    } catch (e) {
+      resEl.textContent = "No se pudo importar (¿permisos? recuerda que esto solo lo puede hacer el administrador general).";
+    }
+  });
+
+  unsubs.admin = onSnapshot(collection(db, "usuarios"), (snap) => {
+    const usuarios = [];
+    snap.forEach((d) => usuarios.push({ id: d.id, ...d.data() }));
+    usuarios.forEach((u) => usuariosCache.set(u.id, u));
+    $("listaUsuarios").innerHTML = `<div class="tabla-scroll"><table class="tabla"><thead><tr>
+        <th>Nombre</th><th>Correo</th><th>Rol</th><th>Gestiona a</th><th>Activo</th><th></th>
+      </tr></thead><tbody>${usuarios.map((u) => filaUsuarioHTML(u, usuarios)).join("")}</tbody></table></div>`;
+    conectarFilaUsuarios();
+  });
+
+  unsubs.adminProyectos = onSnapshot(collection(db, "proyectos"), (snap) => {
+    const nombres = [];
+    proyectosInfo.clear();
+    snap.forEach((d) => { nombres.push(d.id); proyectosInfo.set(d.id, d.data()); });
+    nombres.sort((a, b) => a.localeCompare(b, "es"));
+    // mantenemos también el catálogo "en vivo" que usan los selectores de
+    // Nueva tarea / filtros, al día con lo que se vea aquí
+    PROYECTOS = nombres.length ? nombres : [...PROYECTOS_POR_DEFECTO];
+    $("btnSembrarProyectos").hidden = nombres.length > 0;
+    $("listaProyectos").innerHTML = nombres.length
+      ? nombres.map((n) => proyectoFilaHTML(n, proyectosInfo.get(n))).join("")
+      : '<p class="vacio">Todavía no has guardado ningún proyecto. Agrega uno, o usa el botón de catálogo de arriba.</p>';
+    conectarFilaProyectos();
+  });
+}
+
+function filaUsuarioHTML(u, todos) {
+  const esYoMismo = u.id === miUid;
+  return `
+    <tr>
+      <td>${esc(u.nombre)}${esYoMismo ? " (tú)" : ""}</td>
+      <td>${esc(u.email)}</td>
+      <td>
+        <select class="sel-rol" data-uid="${u.id}" ${esYoMismo ? "disabled" : ""}>
+          <option value="staff" ${u.rol === "staff" ? "selected" : ""}>Personal</option>
+          <option value="admin" ${u.rol === "admin" ? "selected" : ""}>Jefe de área</option>
+          <option value="owner" ${u.rol === "owner" ? "selected" : ""}>Administrador general</option>
+        </select>
+      </td>
+      <td>${u.rol === "admin" ? gestionadosHTML(u, todos) : "—"}</td>
+      <td><label class="opcion-checkbox"><input type="checkbox" class="chk-activo" data-uid="${u.id}" ${u.activo !== false ? "checked" : ""} ${esYoMismo ? "disabled" : ""}></label></td>
+      <td>${esYoMismo ? "" : `<button type="button" class="icono-accion btn-quitar-usuario" data-uid="${u.id}" title="Quitar acceso">✕</button>`}</td>
+    </tr>`;
+}
+
+function gestionadosHTML(u, todos) {
+  const gestionados = u.gestionados || [];
+  // Solo se puede asignar personal (no otros jefes de área ni al dueño) para
+  // que el alcance de cada admin no se cruce con el de otro.
+  const disponibles = todos.filter((o) => o.id !== u.id && o.rol === "staff" && !gestionados.includes(o.id));
+  return `
+    <div class="lista-chips">
+      ${gestionados.map((g) => `<span class="chip-quitable"><span>${esc(nombreDe(g))}</span><button type="button" class="btn-quitar-gestionado" data-admin="${u.id}" data-gestionado="${g}">✕</button></span>`).join("") || '<span class="meta-tarea">Ninguno</span>'}
+    </div>
+    ${disponibles.length ? `
+      <select class="sel-agregar-gestionado" data-admin="${u.id}" style="margin-top:6px">
+        <option value="">+ agregar persona…</option>
+        ${disponibles.map((o) => `<option value="${o.id}">${esc(o.nombre)}</option>`).join("")}
+      </select>` : ""}`;
+}
+
+function conectarFilaUsuarios() {
+  $("listaUsuarios").querySelectorAll(".sel-rol").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      try { await updateDoc(doc(db, "usuarios", sel.dataset.uid), { rol: sel.value }); flash("Rol actualizado."); }
+      catch (e) { flash("No se pudo cambiar el rol.", "error"); }
+    });
+  });
+  $("listaUsuarios").querySelectorAll(".chk-activo").forEach((chk) => {
+    chk.addEventListener("change", async () => {
+      try { await updateDoc(doc(db, "usuarios", chk.dataset.uid), { activo: chk.checked }); flash("Estado actualizado."); }
+      catch (e) { flash("No se pudo cambiar el estado.", "error"); }
+    });
+  });
+  $("listaUsuarios").querySelectorAll(".btn-quitar-usuario").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm("¿Quitar a esta persona de la app? Su cuenta de Firebase no se borra, solo su acceso aquí.")) return;
+      try { await deleteDoc(doc(db, "usuarios", b.dataset.uid)); flash("Usuario quitado."); }
+      catch (e) { flash("No se pudo quitar.", "error"); }
+    });
+  });
+  $("listaUsuarios").querySelectorAll(".sel-agregar-gestionado").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      if (!sel.value) return;
+      try { await updateDoc(doc(db, "usuarios", sel.dataset.admin), { gestionados: arrayUnion(sel.value) }); flash("Agregado."); }
+      catch (e) { flash("No se pudo agregar.", "error"); }
+    });
+  });
+  $("listaUsuarios").querySelectorAll(".btn-quitar-gestionado").forEach((b) => {
+    b.addEventListener("click", async () => {
+      try { await updateDoc(doc(db, "usuarios", b.dataset.admin), { gestionados: arrayRemove(b.dataset.gestionado) }); flash("Quitado."); }
+      catch (e) { flash("No se pudo quitar.", "error"); }
+    });
+  });
+}
+
+function proyectoFilaHTML(nombre, info) {
+  const soloDueno = !!(info && info.soloDueno);
+  return `
+    <div class="proyecto-fila">
+      <div class="proyecto-fila-cabecera">
+        <strong>${esc(nombre)}</strong>
+        <span class="badge-visibilidad ${soloDueno ? "restringido" : "abierto"}">${soloDueno ? "🔒 Únicamente para mí" : "🌐 Visible para todos"}</span>
+        <button type="button" class="icono-accion btn-quitar-proyecto" data-proyecto="${esc(nombre)}" title="Quitar proyecto">✕</button>
+      </div>
+      <div class="campo" style="margin-top:6px">
+        <label>¿Quién puede ver las tareas de este proyecto?</label>
+        <select class="sel-visibilidad-proyecto" data-proyecto="${esc(nombre)}">
+          <option value="todos" ${soloDueno ? "" : "selected"}>🌐 Compartir con todos (cada jefe de área ve las de su gente, como siempre)</option>
+          <option value="dueno" ${soloDueno ? "selected" : ""}>🔒 Privado (únicamente yo lo veo/administro)</option>
+        </select>
+      </div>
+    </div>`;
+}
+
+function conectarFilaProyectos() {
+  $("listaProyectos").querySelectorAll(".btn-quitar-proyecto").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm(`¿Quitar el proyecto "${b.dataset.proyecto}" del catálogo? Las tareas que ya lo tienen asignado no se borran ni cambian.`)) return;
+      try { await deleteDoc(doc(db, "proyectos", b.dataset.proyecto)); flash("Proyecto quitado."); }
+      catch (e) { flash("No se pudo quitar.", "error"); }
+    });
+  });
+  $("listaProyectos").querySelectorAll(".sel-visibilidad-proyecto").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      const soloDueno = sel.value === "dueno";
+      try { await updateDoc(doc(db, "proyectos", sel.dataset.proyecto), { soloDueno }); flash("Visibilidad actualizada."); }
+      catch (e) { flash("No se pudo cambiar la visibilidad.", "error"); sel.value = soloDueno ? "todos" : "dueno"; }
+    });
+  });
+}

@@ -17,7 +17,7 @@ import { arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.1
 // Se cambia a mano cada vez que se entrega una actualización, para poder
 // confirmar (abriendo el menú ☰) que el despliegue realmente llegó al
 // navegador y no se está viendo una copia vieja en caché.
-const APP_VERSION = "v2026-10-28b";
+const APP_VERSION = "v2026-11-02";
 
 const $ = (id) => document.getElementById(id);
 const DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"];
@@ -92,6 +92,19 @@ function flash(texto, tipo = "success") {
   el.textContent = texto;
   cont.appendChild(el);
   setTimeout(() => { el.classList.add("oculto"); setTimeout(() => el.remove(), 400); }, 3200);
+}
+
+// Los onSnapshot() de abajo, antes de esto, no tenían un callback de error:
+// si las reglas de Firestore negaban una consulta (ej. "permission-denied"),
+// la lista se quedaba vacía en silencio, sin ningún aviso — y eso se veía
+// igual que "no tengo tareas". Ahora se muestra un mensaje claro en pantalla
+// y el detalle en la consola, para poder distinguir un problema de permisos
+// de una lista legítimamente vacía.
+function manejarErrorConsulta(dondeTexto) {
+  return (e) => {
+    console.error(`Error cargando "${dondeTexto}":`, e);
+    flash(`No se pudo cargar "${dondeTexto}" (${e.code || "error"}). Avisa al administrador general.`, "error");
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -634,7 +647,7 @@ function vistaHoy() {
     conectarHistorial($("hoyListas"), porId);
     conectarSecciones($("hoyListas"));
     activarArrastre($("hoyListas"), porId);
-  });
+  }, manejarErrorConsulta("Hoy"));
 }
 
 // ---------------------------------------------------------------------
@@ -976,7 +989,7 @@ function vistaTodas() {
     $("filtroResponsable").onchange = repintar;
     $("filtroProyecto").onchange = repintar;
     $("filtroEstado").onchange = repintar;
-  });
+  }, manejarErrorConsulta("Todas las tareas"));
 }
 
 // ---------------------------------------------------------------------
@@ -1013,7 +1026,7 @@ function vistaCalendario() {
     // de trabajo pendiente/activa — su historial está en Hoy/Todas.
     snap.forEach((d) => { const t = { id: d.id, ...d.data() }; if (t.estado !== "completado") calTareas.push(t); });
     dibujarCalendario();
-  });
+  }, manejarErrorConsulta("Calendario"));
 }
 
 function dibujarCalendario() {
@@ -1121,7 +1134,7 @@ function vistaEquipo() {
         irA("todas");
       });
     });
-  });
+  }, manejarErrorConsulta("Equipo"));
 }
 
 // ---------------------------------------------------------------------

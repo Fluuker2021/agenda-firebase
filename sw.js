@@ -8,12 +8,10 @@
 //  2) Recibe las notificaciones push de Firebase Cloud Messaging cuando la
 //     app está cerrada o en segundo plano (igual que un mensaje de WhatsApp).
 
-/* ===================== CONFIGURACIÓN (edita esto) =====================
-   Pega aquí EXACTAMENTE el mismo firebaseConfig que ya pegaste en
-   index.html (Firebase Console → Configuración del proyecto → Tus apps →
-   ícono Web). Este archivo es un archivo aparte que el navegador ejecuta
-   por su cuenta (no puede "leer" el de index.html), así que el mismo
-   bloque hay que pegarlo también aquí para que las notificaciones push
+/* ===================== CONFIGURACIÓN =====================
+   El mismo firebaseConfig público de index.html. Este archivo es aparte y
+   el navegador lo ejecuta por su cuenta (no puede "leer" el de index.html),
+   así que el mismo bloque va también aquí para que las notificaciones push
    funcionen con la app cerrada o en segundo plano. */
 const firebaseConfig = {
   apiKey: "AIzaSyDVa8QNEY7wQNwkmit_NrmksQkfm-k6jYs",
@@ -60,7 +58,7 @@ self.addEventListener("fetch", (e) => {
 importScripts("https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js");
 
-if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "PEGAR_AQUI") {
+if (firebaseConfig.apiKey) {
   firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
   // El mensaje llega como "data" pura (ver functions/index.js), no como

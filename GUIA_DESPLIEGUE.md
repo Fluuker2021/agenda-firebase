@@ -246,6 +246,14 @@ las funciones (algo que yo te ayudaría a hacer).
 
 ## Paso 6 — Completar la configuración de la app
 
+> **Nota:** para el proyecto `agenda-trabajo-75f2f` esto ya está hecho — el
+> `firebaseConfig` y la `VAPID_KEY` ya vienen pegados en `index.html` y
+> `sw.js` en cada entrega. Estos valores son públicos por diseño (así es como
+> Firebase espera que viajen en el código del navegador; la seguridad real la
+> dan las reglas de Firestore), así que no hace falta volver a tocarlos salvo
+> que algún día crees un proyecto de Firebase distinto desde cero. Esta
+> sección queda como referencia para ese caso.
+
 1. Sigue en "Configuración del proyecto", pestaña **General** → baja hasta
    "Tus apps" → ícono **`</>`** (Web) → ponle un apodo (ej. "Agenda web") → NO
    marques "Firebase Hosting" → "Registrar app". Te va a mostrar un bloque
@@ -253,10 +261,10 @@ las funciones (algo que yo te ayudaría a hacer).
 2. Abre `index.html` de esta carpeta con cualquier editor de texto y busca el
    bloque que dice:
    ```
-   /* ===================== CONFIGURACIÓN (edita esto) =====================
+   /* ===================== CONFIGURACIÓN =====================
    ```
-   Reemplaza los valores `"PEGAR_AQUI"` del objeto `firebaseConfig` con los que
-   te dio Firebase, y `VAPID_KEY` con la clave del Paso 5. Guarda el archivo.
+   Reemplaza los valores del objeto `firebaseConfig` con los que te dio
+   Firebase, y `VAPID_KEY` con la clave del Paso 5. Guarda el archivo.
 3. **Importante — hazlo también en `sw.js`:** abre el archivo `sw.js` (está en
    la misma carpeta) y verás el mismo bloque `firebaseConfig = {...}` cerca del
    principio. Pega ahí EXACTAMENTE los mismos valores que acabas de poner en
